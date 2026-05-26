@@ -1,0 +1,1452 @@
+// =============================================================================
+// Prisma Schema — generated from Supabase SQL schema
+//
+// Migration guide (moving away from Supabase):
+//   1. Remove previewFeatures = ["multiSchema"] from generator
+//   2. Remove `schemas = [...]` from datasource and change provider
+//   3. Remove all @@schema() directives
+//   4. Replace the User model (auth.users) with your own auth table and remove
+//      @@map("users") / @@schema("auth")
+//   5. Remove @db.Uuid if targeting SQLite/MySQL < 8 (use plain String)
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  schemas  = ["public", "auth"]
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum Role {
+  admin
+  developer
+  user
+
+  @@schema("public")
+}
+
+enum WebhookMode {
+  test
+  live
+
+  @@schema("public")
+}
+
+enum WebhookStatus {
+  active
+  inactive
+  archived
+
+  @@schema("public")
+}
+
+enum WorkflowTemplateStatus {
+  active
+  inactive
+  draft
+
+  @@schema("public")
+}
+
+// ─── Auth User ───────────────────────────────────────────────────────────────
+// Maps to auth.users (Supabase-managed). On migration to another DB:
+//   - Remove @@schema("auth") and @@map("users")
+//   - Add your own fields (email, password_hash, etc.)
+//   - Run prisma migrate to create the table
+
+model User {
+  id String @id @default(uuid()) @db.Uuid
+
+  profile                      Profile?
+  commussoftIntegration        CommussoftIntegration?
+  commussoftJobMaterials       CommussoftJobMaterial[]
+  commussoftPartsAndPrices     CommussoftPartsAndPrices[]
+  commussoftStaff              CommussoftStaff[]
+  developerPermissionsAsOwner  DeveloperPermission[]    @relation("DeveloperAsDev")
+  developerPermissionsAsClient DeveloperPermission[]    @relation("DeveloperAsClient")
+  emailLogs                    EmailLog[]
+  quickbooksIntegration        QuickbooksIntegration?
+  servicem8Integration         Servicem8Integration?
+  servicem8JobMaterials        Servicem8JobMaterial[]
+  servicem8Queues              Servicem8Queue[]
+  simproIntegration            SimproIntegration?
+  smtpConnections              SmtpConnection[]
+  userIntegration              UserIntegration?
+  xeroIntegration              XeroIntegration?
+
+  @@map("users")
+  @@schema("auth")
+}
+
+// ─── Profiles ────────────────────────────────────────────────────────────────
+
+model Profile {
+  id              String   @id @db.Uuid
+  firstName       String?  @map("first_name")
+  lastName        String?  @map("last_name")
+  email           String?
+  phone           String?
+  companyName     String?  @map("company_name")
+  role            Role?    @default(user)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  clientkey       String?  @unique
+  jobAppType      String?  @map("job_app_type")
+  avatarUrl       String?  @map("avatar_url")
+  websiteUrl      String?  @map("website_url")
+  pagePermissions Json?    @default("{\"charts\": true, \"workflow\": true}") @map("page_permissions")
+
+  user User @relation(fields: [id], references: [id])
+
+  commussoftCustomers      CommussoftCustomer[]
+  commussoftCustomerTypes  CommussoftCustomerType[]
+  commussoftJobs           CommussoftJob[]
+  commussoftUserPreferences CommussoftUserPreference[]
+  permissions              Permission[]
+  servicem8Categories      Servicem8Category[]
+  servicem8Contacts        Servicem8Contact[]
+  servicem8JobActivities   Servicem8JobActivity[]
+  servicem8JobPayments     Servicem8JobPayment[]
+  servicem8Jobs            Servicem8Job[]
+  servicem8Locations       Servicem8Location[]
+  servicem8Materials       Servicem8Material[]
+  servicem8Notes           Servicem8Note[]
+  servicem8SiteDetails     Servicem8SiteDetail[]
+  servicem8Staff           Servicem8Staff[]
+  templateFolders          TemplateFolder[]
+  userClientAccessAsUser   UserClientAccess[]  @relation("UserClientAccessUser")
+  userClientAccessAsClient UserClientAccess[]  @relation("UserClientAccessClient")
+  workflowTemplates        WorkflowTemplate[]
+  workflowsLastEdited      Workflow[]          @relation("WorkflowLastEditedBy")
+  workflowsCurrentEditing  Workflow[]          @relation("WorkflowCurrentEditor")
+
+  @@map("profiles")
+  @@schema("public")
+}
+
+// ─── Commusoft ───────────────────────────────────────────────────────────────
+
+model CommussoftCustomer {
+  id                             BigInt   @id
+  userId                         String   @map("user_id") @db.Uuid
+  contactid                      BigInt?
+  title                          String?
+  titleId                        BigInt?
+  name                           String?
+  surname                        String?
+  companyname                    String?
+  servicereminderpreference      String?
+  parentpropertiesid             BigInt?
+  addressline1                   String?
+  addressline2                   String?
+  addressline3                   String?
+  town                           String?
+  county                         String?
+  postcode                       String?
+  latitude                       Decimal?
+  longitude                      Decimal?
+  settingsTypesofbuildingsid     BigInt?
+  vacant                         Int?
+  accountingsystemreference      String?
+  emailaddress                   String?
+  countrycode                    String?
+  telephonenumber                String?
+  invoiceAddressId               BigInt?
+  auditSenttoaccountingsystemsid BigInt?
+  pricebookid                    BigInt?
+  customertypesid                String?
+
+  // Dual FK in Supabase (auth.users + profiles) — Prisma uses profiles
+  profile Profile @relation(fields: [userId], references: [id])
+
+  @@map("commusoft_customers")
+  @@schema("public")
+}
+
+model CommussoftCustomerType {
+  uuid                 String    @id @db.Uuid
+  createdondatetime    DateTime?
+  createdbytype        Int?
+  createdbyid          Int?
+  id                   Int?      @unique
+  lastmodifieddatetime DateTime?
+  description          String?
+  customerdescription  String?
+  companynamerequired  Boolean?
+  allowforbranches     Boolean?
+  typeofjobaddress     String?
+  sortOrder            Int?      @map("order")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+  userId               String?   @map("user_id") @db.Uuid
+
+  profile Profile? @relation(fields: [userId], references: [id])
+
+  @@map("commusoft_customertype")
+  @@schema("public")
+}
+
+model CommussoftIntegration {
+  id            String   @id @default(uuid()) @db.Uuid
+  userId        String   @unique @map("user_id") @db.Uuid
+  clientid      String?
+  username      String?
+  password      String?
+  applicationid String?
+  createdAt     DateTime @default(now()) @map("created_at")
+  accessToken   String?  @map("access_token")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("commusoft_intigrations")
+  @@schema("public")
+}
+
+model CommussoftJobMaterial {
+  id              BigInt    @id @default(autoincrement())
+  uuid            String    @unique
+  jobUuid         String?   @map("job_uuid")
+  name            String?
+  quantity        Decimal?
+  unitPrice       Decimal?  @map("unit_price")
+  unitCost        Decimal?  @map("unit_cost")
+  cost            Decimal?
+  displayedAmount String?   @map("displayed_amount")
+  displayedCost   String?   @map("displayed_cost")
+  notes           String?
+  active          Int?      @default(1)
+  editDate        DateTime? @map("edit_date")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  userId          String    @map("user_id") @db.Uuid
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("commusoft_job_materials")
+  @@schema("public")
+}
+
+// Column names with spaces/dots are preserved via @map — Prisma quotes them automatically
+model CommussoftJob {
+  id                       String  @id @default(uuid()) @db.Uuid
+  userId                   String  @map("user_id") @db.Uuid
+  customerName             String? @map("Customer Name")
+  customerAccountNumber    String? @map("Customer.Account.Number")
+  workAddressAccountNumber String? @map("Work.Address.Account.Number")
+  customerLandline         String? @map("Customer Landline")
+  customerMobile           String? @map("Customer Mobile")
+  customerEmail            String? @map("Customer Email")
+  customerAddressLine1     String? @map("Customer Address Line 1")
+  landlordName             String? @map("Landlord Name")
+  jobNumber                String? @map("Job Number")
+  jobDate                  String? @map("Job Date")
+  contactName              String? @map("Contact Name")
+  jobDescription           String? @map("Job Description")
+  jobNotes                 String? @map("Job Notes")
+  customerReference        String? @map("Customer reference")
+  quotedAmount             String? @map("Quoted Amount")
+  jobAddressName           String? @map("Job Address Name")
+  jobAddressLine1          String? @map("Job Address Line 1")
+  jobAddressLine2          String? @map("Job Address Line 2")
+  jobAddressLine3          String? @map("Job Address Line 3")
+  jobAddressTown           String? @map("Job Address Town")
+  jobAddressCounty         String? @map("Job Address County")
+  jobAddressPostcode       String? @map("Job Address Postcode")
+  jobAddressTelephone      String? @map("Job Address Telephone")
+  jobAddressMobile         String? @map("Job Address Mobile")
+  jobAddressEmail          String? @map("Job Address Email")
+  numberOfDiaryEvents      String? @map("Number of Diary Events")
+  priority                 String? @map("Priority")
+  businessUnit             String? @map("Business unit")
+  additionalContact        String? @map("Additional Contact")
+  lastDiaryEvent           String? @map("Last Diary Event")
+  nextDiaryEvent           String? @map("Next Diary Event")
+  lastEngineerNameOnSite   String? @map("Last Engineer Name On Site")
+  nextEngineerNameOnSite   String? @map("Next Engineer Name On Site")
+  lastEngineerMobileStatus String? @map("Last Engineer Mobile Status")
+  isJobComplete            String? @map("Is Job Complete")
+  isARecall                String? @map("Is a Recall")
+  numberOfInvoicesRaised   String? @map("Number of Invoices Raised")
+  engineerName             String? @map("Engineer Name")
+  jobUuid                  String? @map("Job Uuid") @db.Uuid
+  jobPropertyType          String? @map("Job Property Type")
+  jobPropertyUuid          String? @map("Job Property Uuid") @db.Uuid
+  jobCustomerId            String? @map("Job Customer Id")
+  createdFrom              String? @map("Created From")
+  preferredDate            String? @map("Preferred date")
+  completedDate            String? @map("Completed Date")
+  jobOnHoldReasons         String? @map("Job on hold reasons")
+  customerContract         String? @map("Customer contract")
+  jobContract              String? @map("Job contract")
+  numberOfCertificates     String? @map("Number of certificates")
+  jobStage                 String? @map("Job stage")
+  jobStageColor            String? @map("JobStageColor")
+  jobId                    String?
+  propertyId               String?
+  parentPropertyId         String?
+
+  profile Profile @relation(fields: [userId], references: [id])
+
+  @@map("commusoft_jobs")
+  @@schema("public")
+}
+
+model CommussoftPartsAndPrices {
+  id                     BigInt    @id @default(autoincrement())
+  uuid                   String    @unique
+  description            String?
+  barcode                String?
+  type                   String?
+  make                   String?
+  model                  String?
+  manufacturerPartNumber String?   @map("manufacturer_part_number")
+  price                  Decimal?
+  markup                 Decimal?
+  vat                    String?
+  createdOnDatetime      DateTime? @map("created_on_datetime")
+  lastModifiedDatetime   DateTime? @map("last_modified_datetime")
+  active                 Int?      @default(1)
+  createdAt              DateTime  @default(now()) @map("created_at")
+  userId                 String    @map("user_id") @db.Uuid
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("commusoft_parts_and_prices")
+  @@schema("public")
+}
+
+model CommussoftStaff {
+  uuid                    String    @id @db.Uuid
+  userId                  String    @map("user_id") @db.Uuid
+  createdondatetime       DateTime?
+  createdbytype           Int?
+  createdbyid             Int?
+  commussoftId            Int?      @unique @map("commusoft_id")
+  username                String?
+  settingsClientbranchesid Int?     @map("settings_clientbranchesid")
+  name                    String?
+  surname                 String?
+  addressline1            String?
+  addressline2            String?
+  addressline3            String?
+  town                    String?
+  county                  String?
+  telephone               String?
+  mobilecountrycode       Int?
+  mobile                  String?
+  email                   String?
+  profilepicture          String?
+  appearondiary           Boolean?
+  nationalinsurance       String?
+  usertype                String?
+  status                  String?
+  colourondiary           String?
+  signature               String?
+  jmsroleid               Json?
+  gps                     Json?
+  sipSettings             Json?
+  insertedAt              DateTime  @default(now()) @map("inserted_at")
+  updatedAt               DateTime  @updatedAt @map("updated_at")
+  datejoined              String?
+  gasregistrationnumber   String?
+  id                      Int?
+  idcardnumber            String?
+  securityquestion        String?
+  settingsSecurityrolesid Json?     @map("settings_securityrolesid")
+  suspended               Boolean?
+  telephonecountrycode    Int?
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("commusoft_staff")
+  @@schema("public")
+}
+
+model CommussoftUserPreference {
+  id       Int      @id
+  userId   String   @map("user_id") @db.Uuid
+  checked  Boolean?
+  position Int?
+
+  profile Profile @relation(fields: [userId], references: [id])
+
+  @@map("commusoft_userpreference")
+  @@schema("public")
+}
+
+// ─── Developer Permissions ───────────────────────────────────────────────────
+
+model DeveloperPermission {
+  id           String   @id @default(uuid()) @db.Uuid
+  developerId  String   @map("developer_id") @db.Uuid
+  clientUserId String   @map("client_user_id") @db.Uuid
+  page         String
+  canRead      Boolean  @default(false) @map("can_read")
+  canWrite     Boolean  @default(false) @map("can_write")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  developer  User @relation("DeveloperAsDev", fields: [developerId], references: [id])
+  clientUser User @relation("DeveloperAsClient", fields: [clientUserId], references: [id])
+
+  @@map("developer_permissions")
+  @@schema("public")
+}
+
+// ─── Email ───────────────────────────────────────────────────────────────────
+
+model EmailLog {
+  id           String    @id @db.Uuid
+  smtpId       String    @map("smtp_id") @db.Uuid
+  templateId   String    @map("template_id") @db.Uuid
+  toEmail      String    @map("to_email")
+  subject      String?
+  status       String
+  attemptCount Int?      @default(1) @map("attempt_count")
+  errorMessage String?   @map("error_message")
+  sentAt       DateTime? @default(now()) @map("sent_at")
+  // cc/bcc/attachment were ARRAY in Postgres — stored as Json for cross-DB portability
+  cc           Json?
+  bcc          Json?
+  attachment   Json?
+  createdAt    DateTime  @default(now()) @map("created_at")
+  userId       String    @map("user_id") @db.Uuid
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("email_logs")
+  @@schema("public")
+}
+
+model EmailTemplate {
+  id             String   @id @db.Uuid
+  name           String
+  subject        String
+  htmlTemplate   String   @map("html_template")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+  defaultReplyTo String?  @map("default_reply_to")
+  body           String?
+
+  @@map("email_templates")
+  @@schema("public")
+}
+
+// ─── Integration Webhook Subscriptions ───────────────────────────────────────
+
+model IntegrationWebhookSubscription {
+  id                     String    @id @default(uuid()) @db.Uuid
+  workflowId             String    @map("workflow_id") @db.Uuid
+  nodeId                 String    @unique @map("node_id") @db.Uuid
+  userId                 String    @map("user_id") @db.Uuid
+  integrationKey         String    @map("integration_key")
+  eventKey               String    @map("event_key")
+  config                 Json?     @default("{}")
+  externalSubscriptionId String?   @map("external_subscription_id")
+  targetPath             String    @map("target_path")
+  signingSecret          String?   @map("signing_secret")
+  isActive               Boolean   @default(true) @map("is_active")
+  lastReceivedAt         DateTime? @map("last_received_at")
+  totalReceived          Int       @default(0) @map("total_received")
+  errorCount             Int       @default(0) @map("error_count")
+  lastError              String?   @map("last_error")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
+
+  workflow  Workflow         @relation(fields: [workflowId], references: [id])
+  node      WorkflowNode     @relation(fields: [nodeId], references: [id])
+  eventLogs WebhookEventLog[]
+
+  @@map("integration_webhook_subscriptions")
+  @@schema("public")
+}
+
+// ─── LeadsHub ────────────────────────────────────────────────────────────────
+
+model LeadshubContact {
+  id               String    @id @default(uuid()) @db.Uuid
+  ghlContactId     String    @map("ghl_contact_id")
+  locationId       String    @map("location_id")
+  firstName        String?   @map("first_name")
+  lastName         String?   @map("last_name")
+  email            String?
+  phone            String?
+  tags             Json?
+  rawData          Json?     @map("raw_data")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+  contactName      String?   @map("contact_name")
+  companyName      String?   @map("company_name")
+  type             String?
+  source           String?
+  assignedTo       String?   @map("assigned_to")
+  city             String?
+  state            String?
+  postalCode       String?   @map("postal_code")
+  country          String?
+  website          String?
+  timezone         String?
+  dnd              Boolean?
+  dateAdded        DateTime? @map("date_added")
+  dateUpdated      DateTime? @map("date_updated")
+  attributions     Json?
+  customFields     Json?     @map("custom_fields")
+  firstNameRaw     String?   @map("first_name_raw")
+  lastNameRaw      String?   @map("last_name_raw")
+  additionalEmails Json?     @map("additional_emails")
+  dndSettings      Json?     @map("dnd_settings")
+  address1         String?
+  businessId       String?   @map("business_id")
+  followers        Json?
+  profilePhoto     String?   @map("profile_photo")
+  dateOfBirth      DateTime? @map("date_of_birth") @db.Date
+  startAfter       Json?     @map("start_after")
+
+  @@map("leadshub_contacts")
+  @@schema("public")
+}
+
+model LeadshubIntegration {
+  id           BigInt    @id @default(autoincrement())
+  createdAt    DateTime  @default(now()) @map("created_at")
+  companyId    String?   @map("company_id")
+  locationId   String?   @map("location_id")
+  accessToken  String?   @map("access_token")
+  refreshToken String?   @map("refresh_token")
+  expiresIn    BigInt?   @map("expires_in")
+  userType     String?   @map("user_type")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+  expiresAt    DateTime? @map("expires_at")
+  isActive     Boolean   @default(true) @map("is_active")
+  userId       String?   @map("user_id") @db.Uuid
+
+  @@map("leadshub_integrations")
+  @@schema("public")
+}
+
+model LeadshubOpportunity {
+  id                 String    @id
+  locationId         String    @map("location_id")
+  contactId          String    @map("contact_id")
+  name               String?
+  monetaryValue      Decimal   @default(0) @map("monetary_value")
+  pipelineId         String?   @map("pipeline_id")
+  pipelineStageId    String?   @map("pipeline_stage_id")
+  assignedTo         String?   @map("assigned_to")
+  status             String?
+  source             String?
+  lostReasonId       String?   @map("lost_reason_id")
+  lastStatusChangeAt DateTime? @map("last_status_change_at")
+  lastStageChangeAt  DateTime? @map("last_stage_change_at")
+  createdAt          DateTime? @map("created_at")
+  updatedAt          DateTime? @map("updated_at")
+  contactName        String?   @map("contact_name")
+  contactEmail       String?   @map("contact_email")
+  contactPhone       String?   @map("contact_phone")
+  contactCompanyName String?   @map("contact_company_name")
+  contactTags        Json      @default("[]") @map("contact_tags")
+  customFields       Json      @default("[]") @map("custom_fields")
+  followers          Json      @default("[]")
+  insertedAt         DateTime  @default(now()) @map("inserted_at")
+
+  @@map("leadshub_opportunities")
+  @@schema("public")
+}
+
+model LeadshubPipelineStage {
+  id         String   @id
+  pipelineId String   @map("pipeline_id")
+  locationId String   @map("location_id")
+  name       String
+  position   Int?
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@map("leadshub_pipeline_stages")
+  @@schema("public")
+}
+
+model LeadshubPipeline {
+  id                        String   @id
+  locationId                String   @map("location_id")
+  name                      String
+  originId                  String?  @map("origin_id")
+  useOpportunityProbability Boolean  @default(false) @map("use_opportunity_probability")
+  stages                    Json     @default("[]")
+  createdAt                 DateTime @default(now()) @map("created_at")
+  updatedAt                 DateTime @updatedAt @map("updated_at")
+
+  @@map("leadshub_pipelines")
+  @@schema("public")
+}
+
+// ─── Permissions ─────────────────────────────────────────────────────────────
+
+model Permission {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  page      String
+  canRead   Boolean  @default(true) @map("can_read")
+  canWrite  Boolean  @default(false) @map("can_write")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  profile Profile @relation(fields: [userId], references: [id])
+
+  @@map("permissions")
+  @@schema("public")
+}
+
+// ─── Polling ─────────────────────────────────────────────────────────────────
+
+model PollingSeenRecord {
+  id             String   @id @default(uuid()) @db.Uuid
+  subscriptionId String   @map("subscription_id") @db.Uuid
+  externalId     String   @map("external_id")
+  firstSeenAt    DateTime @default(now()) @map("first_seen_at")
+
+  subscription PollingSubscription @relation(fields: [subscriptionId], references: [id])
+
+  @@map("polling_seen_records")
+  @@schema("public")
+}
+
+model PollingSubscription {
+  id             String    @id @default(uuid()) @db.Uuid
+  workflowId     String    @map("workflow_id") @db.Uuid
+  nodeId         String    @unique @map("node_id") @db.Uuid
+  userId         String    @map("user_id") @db.Uuid
+  integrationKey String    @map("integration_key")
+  eventKey       String    @map("event_key")
+  config         Json?     @default("{}")
+  pollInterval   Int       @default(300) @map("poll_interval")
+  cursorValue    String?   @map("cursor_value")
+  cursorType     String?   @default("timestamp") @map("cursor_type")
+  lastPolledAt   DateTime? @map("last_polled_at")
+  lastError      String?   @map("last_error")
+  errorCount     Int       @default(0) @map("error_count")
+  isActive       Boolean   @default(true) @map("is_active")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  workflow    Workflow            @relation(fields: [workflowId], references: [id])
+  node        WorkflowNode        @relation(fields: [nodeId], references: [id])
+  seenRecords PollingSeenRecord[]
+
+  @@map("polling_subscriptions")
+  @@schema("public")
+}
+
+// ─── QuickBooks ──────────────────────────────────────────────────────────────
+
+model QuickbooksIntegration {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @unique @map("user_id") @db.Uuid
+  accessToken  String   @map("access_token")
+  refreshToken String   @map("refresh_token")
+  expiresAt    DateTime @map("expires_at")
+  realmId      String?  @map("realm_id")
+  isConnected  Boolean  @default(false) @map("is_connected")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("quickbooks_integrations")
+  @@schema("public")
+}
+
+// ─── ServiceM8 ───────────────────────────────────────────────────────────────
+
+model Servicem8Category {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  uuid      String    @unique
+  name      String?
+  colour    String?
+  active    Int       @default(1)
+  editDate  DateTime? @map("edit_date")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  // Dual FK in Supabase (auth.users + profiles) — Prisma uses profiles
+  profile Profile        @relation(fields: [userId], references: [id])
+  jobs    Servicem8Job[]
+
+  @@map("servicem8_categories")
+  @@schema("public")
+}
+
+model Servicem8Contact {
+  id               String    @id @default(uuid()) @db.Uuid
+  userId           String    @map("user_id") @db.Uuid
+  uuid             String    @unique
+  companyUuid      String?   @map("company_uuid")
+  first            String?
+  last             String?
+  email            String?
+  phone            String?
+  mobile           String?
+  type             String?
+  isPrimaryContact String    @default("0") @map("is_primary_contact")
+  active           Int       @default(1)
+  editDate         DateTime? @map("edit_date")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  profile Profile @relation(fields: [userId], references: [id])
+
+  @@map("servicem8_contacts")
+  @@schema("public")
+}
+
+model Servicem8Integration {
+  id             String    @id @default(uuid()) @db.Uuid
+  userId         String    @unique @map("user_id") @db.Uuid
+  accessToken    String    @map("access_token")
+  expiresAt      DateTime  @map("expires_at")
+  scopes         String?
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  needsReauth    Boolean   @default(false) @map("needs_reauth")
+  refreshToken   String?   @map("refresh_token")
+  lastSyncedAt   DateTime? @map("last_synced_at")
+  sm8AccountUuid String?   @map("sm8_account_uuid")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("servicem8_integrations")
+  @@schema("public")
+}
+
+model Servicem8JobActivity {
+  uuid                   String    @id @default(uuid()) @db.Uuid
+  userId                 String    @map("user_id") @db.Uuid
+  startDate              DateTime? @map("start_date")
+  endDate                DateTime? @map("end_date")
+  active                 Int?
+  activityWasRecorded    Int?      @map("activity_was_recorded")
+  activityWasAutomated   Int?      @map("activity_was_automated")
+  editDate               DateTime? @map("edit_date")
+  activityWasScheduled   Int?      @map("activity_was_scheduled")
+  hasBeenOpened          Int?      @map("has_been_opened")
+  hasBeenOpenedTimestamp DateTime? @map("has_been_opened_timestamp")
+  travelTimeInSeconds    String?   @map("travel_time_in_seconds")
+  travelDistanceInMeters String?   @map("travel_distance_in_meters")
+  allocatedTimestamp     DateTime? @map("allocated_timestamp")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
+  jobUuid                String?   @map("job_uuid") @db.Uuid
+  staffUuid              String?   @map("staff_uuid") @db.Uuid
+  editByStaffUuid        String?   @map("edit_by_staff_uuid") @db.Uuid
+  allocatedByStaffUuid   String?   @map("allocated_by_staff_uuid") @db.Uuid
+  materialUuid           String?   @map("material_uuid") @db.Uuid
+
+  profile Profile @relation(fields: [userId], references: [id])
+
+  @@map("servicem8_job_activities")
+  @@schema("public")
+}
+
+model Servicem8JobMaterial {
+  id                            BigInt    @id @default(autoincrement())
+  userId                        String    @map("user_id") @db.Uuid
+  uuid                          String    @unique @db.Uuid
+  taxRateUuid                   String?   @map("tax_rate_uuid") @db.Uuid
+  quantity                      Decimal   @default(0)
+  name                          String
+  price                         Decimal   @default(0)
+  active                        Boolean   @default(false)
+  displayedAmountIsTaxInclusive Boolean   @default(false) @map("displayed_amount_is_tax_inclusive")
+  displayedAmount               Decimal   @default(0) @map("displayed_amount")
+  editDate                      DateTime? @map("edit_date")
+  jobUuid                       String?   @map("job_uuid") @db.Uuid
+  materialUuid                  String?   @map("material_uuid") @db.Uuid
+  sortOrder                     Int       @default(0) @map("sort_order")
+  cost                          Decimal   @default(0)
+  displayedCost                 Decimal   @default(0) @map("displayed_cost")
+  jobMaterialBundleUuid         String?   @map("job_material_bundle_uuid") @db.Uuid
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("servicem8_job_materials")
+  @@schema("public")
+}
+
+model Servicem8JobPayment {
+  uuid           String    @id @default(uuid()) @db.Uuid
+  active         Int?
+  editDate       DateTime? @map("edit_date")
+  jobUuid        String?   @map("job_uuid") @db.Uuid
+  actionedByUuid String?   @map("actioned_by_uuid") @db.Uuid
+  timestamp      DateTime?
+  amount         String?
+  method         String?
+  note           String?
+  attachmentUuid String?   @map("attachment_uuid") @db.Uuid
+  isDeposit      String?   @map("is_deposit")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  userId         String?   @map("user_id") @db.Uuid
+
+  profile Profile? @relation(fields: [userId], references: [id])
+
+  @@map("servicem8_job_payments")
+  @@schema("public")
+}
+
+model Servicem8JobStatus {
+  id        Int      @id @default(autoincrement())
+  status    String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("servicem8_job_statuses")
+  @@schema("public")
+}
+
+model Servicem8Job {
+  id                       String    @id @default(uuid()) @db.Uuid
+  userId                   String    @map("user_id") @db.Uuid
+  uuid                     String    @unique
+  generatedJobId           String?   @map("generated_job_id")
+  companyUuid              String?   @map("company_uuid")
+  categoryUuid             String?   @map("category_uuid")
+  queueUuid                String?   @map("queue_uuid")
+  status                   String?
+  date                     DateTime?
+  jobAddress               String?   @map("job_address")
+  billingAddress           String?   @map("billing_address")
+  jobDescription           String?   @map("job_description")
+  workDoneDescription      String?   @map("work_done_description")
+  geoIsValid               Int       @default(0) @map("geo_is_valid")
+  lat                      Float?
+  lng                      Float?
+  geoCountry               String?   @map("geo_country")
+  geoPostcode              String?   @map("geo_postcode")
+  geoState                 String?   @map("geo_state")
+  geoCity                  String?   @map("geo_city")
+  geoStreet                String?   @map("geo_street")
+  geoNumber                String?   @map("geo_number")
+  quoteDate                DateTime? @map("quote_date")
+  workOrderDate            DateTime? @map("work_order_date")
+  completionDate           DateTime? @map("completion_date")
+  unsuccessfulDate         DateTime? @map("unsuccessful_date")
+  invoiceSentStamp         DateTime? @map("invoice_sent_stamp")
+  quoteSentStamp           DateTime? @map("quote_sent_stamp")
+  jobIsScheduledUntilStamp DateTime? @map("job_is_scheduled_until_stamp")
+  readyToInvoiceStamp      DateTime? @map("ready_to_invoice_stamp")
+  paymentDate              DateTime? @map("payment_date")
+  paymentMethod            String?   @map("payment_method")
+  paymentAmount            Decimal   @default(0) @map("payment_amount")
+  paymentNote              String?   @map("payment_note")
+  paymentProcessed         Int       @default(0) @map("payment_processed")
+  paymentProcessedStamp    DateTime? @map("payment_processed_stamp")
+  paymentReceived          Int       @default(0) @map("payment_received")
+  paymentReceivedStamp     DateTime? @map("payment_received_stamp")
+  totalInvoiceAmount       Decimal   @default(0) @map("total_invoice_amount")
+  readyToInvoice           String    @default("0") @map("ready_to_invoice")
+  active                   Int       @default(1)
+  quoteSent                Boolean   @default(false) @map("quote_sent")
+  invoiceSent              Boolean   @default(false) @map("invoice_sent")
+  purchaseOrderNumber      String?   @map("purchase_order_number")
+  badges                   String?
+  completionActionedByUuid String?   @map("completion_actioned_by_uuid")
+  paymentActionedByUuid    String?   @map("payment_actioned_by_uuid")
+  createdByStaffUuid       String?   @map("created_by_staff_uuid")
+  queueAssignedStaffUuid   String?   @map("queue_assigned_staff_uuid")
+  editDate                 DateTime? @map("edit_date")
+  createdAt                DateTime  @default(now()) @map("created_at")
+  queueExpiryDate          DateTime? @map("queue_expiry_date")
+  activeNetworkRequestUuid String?   @map("active_network_request_uuid")
+  relatedKnowledgeArticles String?   @map("related_knowledge_articles")
+
+  // Dual FK in Supabase (auth.users + profiles) — Prisma uses profiles
+  profile        Profile              @relation(fields: [userId], references: [id])
+  siteDetail     Servicem8SiteDetail? @relation(fields: [companyUuid], references: [uuid])
+  category       Servicem8Category?   @relation(fields: [categoryUuid], references: [uuid])
+  queue          Servicem8Queue?      @relation(fields: [queueUuid], references: [uuid])
+  completionStaff Servicem8Staff?     @relation("CompletionActionedBy", fields: [completionActionedByUuid], references: [uuid])
+  createdByStaff  Servicem8Staff?     @relation("CreatedByStaff", fields: [createdByStaffUuid], references: [uuid])
+
+  @@map("servicem8_jobs")
+  @@schema("public")
+}
+
+model Servicem8Location {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  uuid      String    @unique
+  name      String?
+  active    Int       @default(1)
+  line1     String?
+  line2     String?
+  line3     String?
+  city      String?
+  state     String?
+  postCode  String?   @map("post_code")
+  country   String?
+  phone1    String?   @map("phone_1")
+  lat       Float?
+  lng       Float?
+  editDate  DateTime? @map("edit_date")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  profile Profile @relation(fields: [userId], references: [id])
+
+  @@map("servicem8_locations")
+  @@schema("public")
+}
+
+model Servicem8Material {
+  id                        BigInt    @id @default(autoincrement())
+  uuid                      String?   @unique @db.Uuid
+  name                      String?
+  price                     Decimal?
+  active                    Boolean?
+  barcode                   String?
+  itemNumber                String?   @map("item_number")
+  cost                      Decimal?
+  quantityInStock           Int?      @map("quantity_in_stock")
+  priceIncludesTaxes        Boolean?  @map("price_includes_taxes")
+  itemIsInventoried         Boolean?  @map("item_is_inventoried")
+  editDate                  DateTime? @map("edit_date")
+  taxRateUuid               String?   @map("tax_rate_uuid")
+  itemDescription           String?   @map("item_description")
+  useDescriptionForInvoicing Boolean? @map("use_description_for_invoicing")
+  userId                    String    @map("user_id") @db.Uuid
+
+  profile Profile @relation(fields: [userId], references: [id])
+
+  @@map("servicem8_materials")
+  @@schema("public")
+}
+
+model Servicem8Note {
+  uuid                       String    @id @db.Uuid
+  editByStaffUuid            String?   @map("edit_by_staff_uuid") @db.Uuid
+  createDate                 DateTime? @map("create_date")
+  editDate                   DateTime? @map("edit_date")
+  active                     Int?
+  note                       String?
+  actionRequired             String?   @map("action_required")
+  actionCompletedByStaffUuid String?   @map("action_completed_by_staff_uuid")
+  relatedObject              String?   @map("related_object")
+  relatedObjectUuid          String?   @map("related_object_uuid") @db.Uuid
+  createdAt                  DateTime  @default(now()) @map("created_at")
+  updatedAt                  DateTime  @updatedAt @map("updated_at")
+  userId                     String    @map("user_id") @db.Uuid
+
+  profile Profile @relation(fields: [userId], references: [id])
+
+  @@map("servicem8_notes")
+  @@schema("public")
+}
+
+model Servicem8Queue {
+  id                String    @id @default(uuid()) @db.Uuid
+  uuid              String    @unique
+  name              String?
+  defaultTimeframe  Int?      @map("default_timeframe")
+  active            Int       @default(1)
+  subscribedStaff   String?   @map("subscribed_staff")
+  requiresAssignment String   @default("0") @map("requires_assignment")
+  editDate          DateTime? @map("edit_date")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  userId            String    @map("user_id") @db.Uuid
+
+  user User           @relation(fields: [userId], references: [id])
+  jobs Servicem8Job[]
+
+  @@map("servicem8_queues")
+  @@schema("public")
+}
+
+model Servicem8SiteDetail {
+  id                String    @id @default(uuid()) @db.Uuid
+  userId            String    @map("user_id") @db.Uuid
+  uuid              String    @unique
+  name              String?
+  website           String?
+  abnNumber         String?   @map("abn_number")
+  address           String?
+  addressStreet     String?   @map("address_street")
+  addressCity       String?   @map("address_city")
+  addressState      String?   @map("address_state")
+  addressPostcode   String?   @map("address_postcode")
+  addressCountry    String?   @map("address_country")
+  billingAddress    String?   @map("billing_address")
+  active            Int       @default(1)
+  isIndividual      Int       @default(0) @map("is_individual")
+  badges            String?
+  faxNumber         String?   @map("fax_number")
+  taxRateUuid       String?   @map("tax_rate_uuid")
+  billingAttention  String?   @map("billing_attention")
+  paymentTerms      String?   @map("payment_terms")
+  parentCompanyUuid String?   @map("parent_company_uuid")
+  editDate          DateTime? @map("edit_date")
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  profile Profile        @relation(fields: [userId], references: [id])
+  jobs    Servicem8Job[]
+
+  @@map("servicem8_site_details")
+  @@schema("public")
+}
+
+model Servicem8Staff {
+  id                         String    @id @default(uuid()) @db.Uuid
+  userId                     String    @map("user_id") @db.Uuid
+  uuid                       String    @unique
+  first                      String?
+  last                       String?
+  email                      String?
+  mobile                     String?
+  jobTitle                   String?   @map("job_title")
+  active                     Int       @default(1)
+  color                      String?
+  lat                        Float?
+  lng                        Float?
+  geoTimestamp               DateTime? @map("geo_timestamp")
+  hideFromSchedule           Int       @default(0) @map("hide_from_schedule")
+  securityRoleUuid           String?   @map("security_role_uuid")
+  statusMessage              String?   @map("status_message")
+  canReceivePushNotification Int       @default(0) @map("can_receive_push_notification")
+  labourMaterialUuid         String?   @map("labour_material_uuid")
+  customIconUrl              String?   @map("custom_icon_url")
+  editDate                   DateTime? @map("edit_date")
+  createdAt                  DateTime  @default(now()) @map("created_at")
+  customfieldLicenceNumber   String?   @map("customfield_licence_number")
+  navigatingExpiryTimestamp  String?   @map("navigating_expiry_timestamp")
+  navigatingTimestamp        String?   @map("navigating_timestamp")
+  navigatingToJobUuid        String?   @map("navigating_to_job_uuid")
+  statusMessageTimestamp     String?   @map("status_message_timestamp")
+
+  profile        Profile        @relation(fields: [userId], references: [id])
+  completedJobs  Servicem8Job[] @relation("CompletionActionedBy")
+  createdJobs    Servicem8Job[] @relation("CreatedByStaff")
+
+  @@map("servicem8_staff")
+  @@schema("public")
+}
+
+// ─── Simpro ──────────────────────────────────────────────────────────────────
+
+model SimproIntegration {
+  id           String    @id @default(uuid()) @db.Uuid
+  userId       String    @unique @map("user_id") @db.Uuid
+  buildName    String    @map("build_name")
+  baseUrl      String    @map("base_url")
+  companyId    Int       @default(0) @map("company_id")
+  accessToken  String    @map("access_token")
+  refreshToken String?   @map("refresh_token")
+  expiresAt    DateTime? @map("expires_at")
+  scopes       String?
+  needsReauth  Boolean   @default(false) @map("needs_reauth")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("simpro_integrations")
+  @@schema("public")
+}
+
+// ─── SMTP ────────────────────────────────────────────────────────────────────
+
+model SmtpConnection {
+  id                String   @id @db.Uuid
+  name              String
+  host              String
+  port              Int
+  username          String
+  encryptedPassword String   @map("encrypted_password")
+  useTls            Boolean  @default(true) @map("use_tls")
+  status            String?  @default("active")
+  totalSent         Int      @default(0) @map("total_sent")
+  totalFailed       Int      @default(0) @map("total_failed")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+  createdBy         String   @map("created_by") @db.Uuid
+
+  user User @relation(fields: [createdBy], references: [id])
+
+  @@map("smtp_connections")
+  @@schema("public")
+}
+
+// ─── Template Folders ────────────────────────────────────────────────────────
+
+model TemplateFolder {
+  id          String    @id @default(uuid()) @db.Uuid
+  name        String
+  description String?
+  parentId    String?   @map("parent_id") @db.Uuid
+  createdBy   String?   @map("created_by") @db.Uuid
+  isPublic    Boolean   @default(false) @map("is_public")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  parent    TemplateFolder?    @relation("TemplateFolderChildren", fields: [parentId], references: [id])
+  children  TemplateFolder[]   @relation("TemplateFolderChildren")
+  creator   Profile?           @relation(fields: [createdBy], references: [id])
+  templates WorkflowTemplate[]
+
+  @@map("template_folders")
+  @@schema("public")
+}
+
+// ─── Twilio ──────────────────────────────────────────────────────────────────
+
+model TwilioClientConfig {
+  clientName      String   @id @map("client_name")
+  accountSid      String   @map("account_sid")
+  authToken       String   @map("auth_token")
+  verifyServiceId String   @map("verify_service_id")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@map("twilio_client_configs")
+  @@schema("public")
+}
+
+// ─── User Client Access ──────────────────────────────────────────────────────
+
+model UserClientAccess {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @map("user_id") @db.Uuid
+  clientUserId String   @map("client_user_id") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user       Profile @relation("UserClientAccessUser", fields: [userId], references: [id])
+  clientUser Profile @relation("UserClientAccessClient", fields: [clientUserId], references: [id])
+
+  @@map("user_client_access")
+  @@schema("public")
+}
+
+// ─── User Integrations ───────────────────────────────────────────────────────
+
+model UserIntegration {
+  id                  String   @id @default(uuid()) @db.Uuid
+  userId              String   @unique @map("user_id") @db.Uuid
+  commussoftConnected Boolean  @default(false) @map("commusoft_connected")
+  servicem8Connected  Boolean  @default(false) @map("servicem8_connected")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("user_integrations")
+  @@schema("public")
+}
+
+// ─── Webhooks ────────────────────────────────────────────────────────────────
+
+model WebhookAttempt {
+  id             String    @id @default(uuid()) @db.Uuid
+  eventId        String?   @map("event_id") @db.Uuid
+  attemptNo      Int?      @map("attempt_no")
+  responseStatus Int?      @map("response_status")
+  errorMessage   String?   @map("error_message")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  event WebhookEvent? @relation(fields: [eventId], references: [id])
+
+  @@map("webhook_attempts")
+  @@schema("public")
+}
+
+model WebhookEventLog {
+  id              String    @id @default(uuid()) @db.Uuid
+  subscriptionId  String    @map("subscription_id") @db.Uuid
+  externalEventId String?   @map("external_event_id")
+  eventType       String?   @map("event_type")
+  payload         Json?
+  status          String?   @default("received")
+  processedAt     DateTime? @map("processed_at")
+  error           String?
+  receivedAt      DateTime  @default(now()) @map("received_at")
+
+  subscription IntegrationWebhookSubscription @relation(fields: [subscriptionId], references: [id])
+
+  @@map("webhook_event_log")
+  @@schema("public")
+}
+
+model WebhookEvent {
+  id             String    @id @default(uuid()) @db.Uuid
+  webhookId      String?   @map("webhook_id") @db.Uuid
+  requestHeaders Json?     @map("request_headers")
+  requestBody    Json?     @map("request_body")
+  status         String?   @default("pending")
+  receivedAt     DateTime  @default(now()) @map("received_at")
+  processedAt    DateTime? @map("processed_at")
+  clientId       String?   @map("client_id")
+
+  webhook  Webhook?         @relation(fields: [webhookId], references: [id])
+  attempts WebhookAttempt[]
+
+  @@map("webhook_events")
+  @@schema("public")
+}
+
+model Webhook {
+  id              String        @id @default(uuid()) @db.Uuid
+  userId          String        @map("user_id") @db.Uuid
+  name            String
+  uniquePath      String        @unique @map("unique_path")
+  method          String        @default("POST")
+  secretToken     String?       @map("secret_token")
+  isActive        Boolean       @default(true) @map("is_active")
+  actionType      String        @map("action_type")
+  actionConfig    Json?         @map("action_config")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+  mode            WebhookMode   @default(test)
+  status          WebhookStatus @default(active)
+  expiresAt       DateTime?     @map("expires_at")
+  lastTriggeredAt DateTime?     @map("last_triggered_at")
+  deletedAt       DateTime?     @map("deleted_at")
+  fullUrl         String?       @map("full_url")
+  workflowId      String?       @map("workflow_id") @db.Uuid
+
+  workflow Workflow?      @relation(fields: [workflowId], references: [id])
+  events   WebhookEvent[]
+
+  @@map("webhooks")
+  @@schema("public")
+}
+
+// ─── Workflows ───────────────────────────────────────────────────────────────
+
+model WorkflowExecutionLog {
+  id             String   @id @default(uuid()) @db.Uuid
+  executionId    String   @map("execution_id") @db.Uuid
+  workflowId     String   @map("workflow_id") @db.Uuid
+  nodeId         String   @map("node_id") @db.Uuid
+  nodePosition   Int?     @map("node_position")
+  integrationKey String?  @map("integration_key")
+  actionKey      String?  @map("action_key")
+  logLevel       String   @default("mapping") @map("log_level")
+  resolvedValue  String?  @map("resolved_value")
+  status         String
+  errorMessage   String?  @map("error_message")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  execution WorkflowExecution @relation(fields: [executionId], references: [id])
+  node      WorkflowNode      @relation(fields: [nodeId], references: [id])
+
+  @@map("workflow_execution_logs")
+  @@schema("public")
+}
+
+model WorkflowExecution {
+  id             String    @id @default(uuid()) @db.Uuid
+  workflowId     String?   @map("workflow_id") @db.Uuid
+  status         String?   @default("running")
+  triggerPayload Json?     @map("trigger_payload")
+  startedAt      DateTime  @default(now()) @map("started_at")
+  finishedAt     DateTime? @map("finished_at")
+
+  workflow Workflow?              @relation(fields: [workflowId], references: [id])
+  logs     WorkflowExecutionLog[]
+
+  @@map("workflow_executions")
+  @@schema("public")
+}
+
+model WorkflowFieldMapping {
+  id             String   @id @default(uuid()) @db.Uuid
+  workflowNodeId String?  @unique @map("workflow_node_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at")
+  mappings       Json     @default("[]")
+
+  node WorkflowNode? @relation(fields: [workflowNodeId], references: [id])
+
+  @@map("workflow_field_mappings")
+  @@schema("public")
+}
+
+model WorkflowFolder {
+  id        String    @id @default(uuid()) @db.Uuid
+  name      String
+  userId    String    @map("user_id") // plain text, no FK constraint in source
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  parentId  String?   @map("parent_id") @db.Uuid
+  position  Int       @default(0)
+
+  parent    WorkflowFolder?  @relation("WorkflowFolderChildren", fields: [parentId], references: [id])
+  children  WorkflowFolder[] @relation("WorkflowFolderChildren")
+  workflows Workflow[]
+
+  @@map("workflow_folders")
+  @@schema("public")
+}
+
+model WorkflowNode {
+  id             String   @id @default(uuid()) @db.Uuid
+  workflowId     String?  @map("workflow_id") @db.Uuid
+  type           String
+  integrationKey String   @map("integration_key")
+  actionKey      String   @map("action_key")
+  config         Json?    @default("{}")
+  position       Int
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+  nodeCategory   String   @default("action") @map("node_category")
+  samplePayload  Json?    @default("{}") @map("sample_payload")
+  outputSchema   Json?    @default("{}") @map("output_schema")
+
+  workflow            Workflow?                        @relation(fields: [workflowId], references: [id])
+  fieldMapping        WorkflowFieldMapping?
+  executionLogs       WorkflowExecutionLog[]
+  webhookSubscription IntegrationWebhookSubscription?
+  pollingSubscription PollingSubscription?
+
+  @@map("workflow_nodes")
+  @@schema("public")
+}
+
+model WorkflowTagLink {
+  id         String   @id @default(uuid()) @db.Uuid
+  workflowId String   @map("workflow_id") @db.Uuid
+  tagId      String   @map("tag_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  workflow Workflow    @relation(fields: [workflowId], references: [id])
+  tag      WorkflowTag @relation(fields: [tagId], references: [id])
+
+  @@map("workflow_tag_links")
+  @@schema("public")
+}
+
+model WorkflowTag {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  color     String?
+  userId    String   @map("user_id") // plain text, no FK constraint in source
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tagLinks WorkflowTagLink[]
+
+  @@map("workflow_tags")
+  @@schema("public")
+}
+
+model WorkflowTemplateMapping {
+  id             String   @id @default(uuid()) @db.Uuid
+  templateId     String   @map("template_id") @db.Uuid
+  templateNodeId String   @map("template_node_id") @db.Uuid
+  mappings       Json?
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  template     WorkflowTemplate     @relation(fields: [templateId], references: [id])
+  templateNode WorkflowTemplateNode @relation(fields: [templateNodeId], references: [id])
+
+  @@map("workflow_template_mappings")
+  @@schema("public")
+}
+
+model WorkflowTemplateNode {
+  id                  String    @id @default(uuid()) @db.Uuid
+  templateId          String    @map("template_id") @db.Uuid
+  type                String
+  nodeCategory        String?   @map("node_category")
+  integrationKey      String    @map("integration_key")
+  actionKey           String?   @map("action_key")
+  configSchema        Json?     @map("config_schema")
+  requiredCredentials Json?     @map("required_credentials")
+  outputSchema        Json?     @map("output_schema")
+  position            Int
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  template WorkflowTemplate          @relation(fields: [templateId], references: [id])
+  mappings WorkflowTemplateMapping[]
+
+  @@map("workflow_template_nodes")
+  @@schema("public")
+}
+
+model WorkflowTemplate {
+  id               String                 @id @default(uuid()) @db.Uuid
+  name             String
+  description      String?
+  category         String?
+  tag              String?
+  sourceWorkflowId String?                @map("source_workflow_id") @db.Uuid
+  createdBy        String?                @map("created_by") @db.Uuid
+  isPublic         Boolean                @default(false) @map("is_public")
+  usageCount       Int                    @default(0) @map("usage_count")
+  status           WorkflowTemplateStatus @default(active)
+  createdAt        DateTime               @default(now()) @map("created_at")
+  updatedAt        DateTime               @updatedAt @map("updated_at")
+  templateFolderId String?                @map("template_folder_id") @db.Uuid
+
+  sourceWorkflow Workflow?              @relation("WorkflowTemplates", fields: [sourceWorkflowId], references: [id])
+  creator        Profile?              @relation(fields: [createdBy], references: [id])
+  folder         TemplateFolder?       @relation(fields: [templateFolderId], references: [id])
+  nodes          WorkflowTemplateNode[]
+  mappings       WorkflowTemplateMapping[]
+
+  @@map("workflow_templates")
+  @@schema("public")
+}
+
+model Workflow {
+  id                  String    @id @default(uuid()) @db.Uuid
+  userId              String    @map("user_id") @db.Uuid // no FK constraint in source schema
+  name                String
+  status              String?   @default("draft")
+  version             Int       @default(1)
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+  tag                 String?
+  folderId            String?   @map("folder_id") @db.Uuid
+  position            Int       @default(0)
+  lastEditedByUserId  String?   @map("last_edited_by_user_id") @db.Uuid
+  lastEditedAt        DateTime? @map("last_edited_at")
+  currentEditorUserId String?   @map("current_editor_user_id") @db.Uuid
+  editingStartedAt    DateTime? @map("editing_started_at")
+  editingLastPingAt   DateTime? @map("editing_last_ping_at")
+  lastEditedBy        String?   @map("last_edited_by")
+  lastEditedByName    String?   @map("last_edited_by_name")
+
+  folder          WorkflowFolder?                  @relation(fields: [folderId], references: [id])
+  lastEditorUser  Profile?                         @relation("WorkflowLastEditedBy", fields: [lastEditedByUserId], references: [id])
+  currentEditor   Profile?                         @relation("WorkflowCurrentEditor", fields: [currentEditorUserId], references: [id])
+  nodes           WorkflowNode[]
+  executions      WorkflowExecution[]
+  tagLinks        WorkflowTagLink[]
+  webhooks        Webhook[]
+  webhookSubs     IntegrationWebhookSubscription[]
+  pollingSubs     PollingSubscription[]
+  templates       WorkflowTemplate[]               @relation("WorkflowTemplates")
+
+  @@map("workflows")
+  @@schema("public")
+}
+
+// ─── Xero ────────────────────────────────────────────────────────────────────
+
+model XeroIntegration {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @unique @map("user_id") @db.Uuid
+  accessToken  String   @map("access_token")
+  refreshToken String   @map("refresh_token")
+  expiresAt    DateTime @map("expires_at")
+  tenantId     String?  @map("tenant_id")
+  isConnected  Boolean  @default(false) @map("is_connected")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("xero_integrations")
+  @@schema("public")
+}

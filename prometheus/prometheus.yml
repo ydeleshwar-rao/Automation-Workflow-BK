@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'job-management-backend'
+    scheme: https
+    static_configs:
+      - targets: ['backend-leadshub-production.up.railway.app']
+    metrics_path: '/metrics'
