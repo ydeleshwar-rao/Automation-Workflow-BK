@@ -1,14 +1,51 @@
 import jwt from "jsonwebtoken";
 import { ApiError } from "../../utils/ApiError.js";
 
-export type JwtTyp = "access" | "refresh";
+// ─── Types ────────────────────────────────────────────────────────────────────
 
+export type JwtTyp    = "access" | "refresh";
+export type UserRole  = "admin" | "developer";
+
+/**
+ * Custom JWT payload — signed by this backend, verified by this backend.
+ * No Supabase session tokens are passed to the frontend.
+ *
+ * permissions:
+ *   - admin     → ["*"]  (wildcard, all pages)
+ *   - developer → ["dashboard", "workflow", ...] (only granted pages)
+ */
 export interface AppJwtPayload {
-  sub: string;
-  email?: string;
-  clientkey?: string;
-  typ: JwtTyp;
+  sub:         string;       // profiles.id (UUID)
+  email:       string;
+  role:        UserRole;
+  permissions: string[];     // page keys or ["*"] for admin
+  typ:         JwtTyp;
+  iat?:        number;
+  exp?:        number;
 }
+
+export interface TokenPair {
+  access_token:  string;
+  refresh_token: string;
+  expires_in:    number;     // seconds until access token expires
+}
+
+// ─── Page Keys ────────────────────────────────────────────────────────────────
+
+export const PAGE_KEYS = {
+  DASHBOARD:    "dashboard",
+  WORKFLOW:     "workflow",
+  ASSETS:       "assets",
+  INTEGRATIONS: "integrations",
+  ANALYTICS:    "analytics",
+} as const;
+
+export type PageKey = (typeof PAGE_KEYS)[keyof typeof PAGE_KEYS];
+
+/** Admin gets wildcard — access to all pages automatically. */
+export const ADMIN_PERMISSIONS = ["*"] as const;
+
+// ─── Internal helpers ─────────────────────────────────────────────────────────
 
 function accessSecret(): string {
   const s = process.env.JWT_ACCESS_SECRET;
@@ -22,18 +59,9 @@ function refreshSecret(): string {
   return s;
 }
 
-function accessExpires(): string {
-  return process.env.JWT_ACCESS_EXPIRES ?? "15m";
-}
-
-function refreshExpires(): string {
-  return process.env.JWT_REFRESH_EXPIRES ?? "7d";
-}
-
-/** jsonwebtoken SignOptions.expiresIn accepts number (seconds) reliably with strict TS. */
 function expiresSeconds(spec: string): number {
   const m = /^(\d+)\s*([smhd])$/i.exec(spec.trim());
-  if (!m) return 900;
+  if (!m) return 900; // default 15 min
   const n = parseInt(m[1]!, 10);
   const u = m[2]!.toLowerCase();
   if (u === "s") return n;
@@ -42,50 +70,85 @@ function expiresSeconds(spec: string): number {
   return n * 86400;
 }
 
-export function signAccessToken(sub: string, email?: string): string {
-  const payload: AppJwtPayload = email
-    ? { sub, email, typ: "access" }
-    : { sub, typ: "access" };
-  return jwt.sign(payload, accessSecret(), {
-    expiresIn: expiresSeconds(accessExpires()),
-  });
-}
+// ─── Token issuing ────────────────────────────────────────────────────────────
 
-export function signRefreshToken(sub: string, email?: string): string {
-  const payload: AppJwtPayload = email
-    ? { sub, email, typ: "refresh" }
-    : { sub, typ: "refresh" };
-  return jwt.sign(payload, refreshSecret(), {
-    expiresIn: expiresSeconds(refreshExpires()),
-  });
-}
+/**
+ * Issue access + refresh token pair.
+ * Admin always gets ["*"] regardless of what permissions array is passed.
+ */
+export function issueTokenPair(payload: {
+  userId:      string;
+  email:       string;
+  role:        UserRole;
+  permissions: string[];
+}): TokenPair {
+  const accessExpirySpec  = process.env.JWT_ACCESS_EXPIRES  ?? "15m";
+  const refreshExpirySpec = process.env.JWT_REFRESH_EXPIRES ?? "7d";
 
-export function issueTokenPair(sub: string, email?: string) {
+  const accessPayload: Omit<AppJwtPayload, "iat" | "exp"> = {
+    sub:         payload.userId,
+    email:       payload.email,
+    role:        payload.role,
+    permissions: payload.role === "admin" ? ["*"] : payload.permissions,
+    typ:         "access",
+  };
+
+  const refreshPayload = {
+    sub: payload.userId,
+    typ: "refresh" as const,
+  };
+
+  const access_token  = jwt.sign(accessPayload,  accessSecret(),  { expiresIn: expiresSeconds(accessExpirySpec)  });
+  const refresh_token = jwt.sign(refreshPayload, refreshSecret(), { expiresIn: expiresSeconds(refreshExpirySpec) });
+
   return {
-    access_token: signAccessToken(sub, email),
-    refresh_token: signRefreshToken(sub, email),
-    user_id: sub,
+    access_token,
+    refresh_token,
+    expires_in: expiresSeconds(accessExpirySpec),
   };
 }
 
+// ─── Token verification ───────────────────────────────────────────────────────
+
+/** Verify access token — throws ApiError if invalid or expired. */
 export function verifyAccessToken(token: string): AppJwtPayload {
-  const decoded = jwt.verify(token, accessSecret()) as AppJwtPayload;
-  if (decoded.typ !== "access") {
-    throw new ApiError(401, "Invalid token type: expected access token");
+  try {
+    const decoded = jwt.verify(token, accessSecret()) as AppJwtPayload;
+    if (decoded.typ !== "access") {
+      throw new ApiError(401, "Invalid token type: expected access token");
+    }
+    if (!decoded.sub) {
+      throw new ApiError(401, "Invalid token: missing subject");
+    }
+    return decoded;
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    throw new ApiError(401, "Invalid or expired access token");
   }
-  if (!decoded.sub) {
-    throw new ApiError(401, "Invalid token: missing subject");
-  }
-  return decoded;
 }
 
-export function verifyRefreshToken(token: string): AppJwtPayload {
-  const decoded = jwt.verify(token, refreshSecret()) as AppJwtPayload;
-  if (decoded.typ !== "refresh") {
-    throw new ApiError(401, "Invalid token type: expected refresh token");
+/** Verify refresh token — returns user_id. Throws ApiError if invalid. */
+export function verifyRefreshToken(token: string): { sub: string } {
+  try {
+    const decoded = jwt.verify(token, refreshSecret()) as AppJwtPayload;
+    if (decoded.typ !== "refresh") {
+      throw new ApiError(401, "Invalid token type: expected refresh token");
+    }
+    if (!decoded.sub) {
+      throw new ApiError(401, "Invalid token: missing subject");
+    }
+    return { sub: decoded.sub };
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    throw new ApiError(401, "Invalid or expired refresh token");
   }
-  if (!decoded.sub) {
-    throw new ApiError(401, "Invalid token: missing subject");
-  }
-  return decoded;
+}
+
+// ─── Permission helpers ───────────────────────────────────────────────────────
+
+/** Check if a decoded JWT payload grants view access to a page. */
+export function hasPageAccess(payload: AppJwtPayload, pageKey: string): boolean {
+  if (payload.role === "admin")               return true;
+  if (payload.permissions.includes("*"))      return true;
+  return payload.permissions.includes(pageKey);
 }

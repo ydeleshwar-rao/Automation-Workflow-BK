@@ -1,76 +1,46 @@
-import { Router } from "express";
-import { authMiddleware } from "../../middlewares/auth.middleware.js";
-import {
-  resolveTargetUser,
-  requireRole,
-} from "../../middlewares/access.middleware.js";
-import { AccessController } from "./access.controller.js";
+import { Router }            from "express";
+import { authMiddleware }    from "../../middlewares/auth.middleware.js";
+import { requireRole }       from "../../middlewares/access.middleware.js";
+import { AccessController }  from "./access.controller.js";
 
 const router = Router();
 
-// All access endpoints require a logged-in user.
+// All routes require authentication
 router.use(authMiddleware);
 
-// Session/context
-router.get("/me", resolveTargetUser, AccessController.me);
+// ── Session ──────────────────────────────────────────────────────────────────
+// GET /access/me → returns current user info from JWT (no DB call)
+router.get("/me", AccessController.me);
 
-// Clients the caller can see (developer picks from this list).
-router.get("/clients", AccessController.listClients);
+// ── Developer Management ─────────────────────────────────────────────────────
+// GET    /access/developers              → admin: all, developer: self
+// POST   /access/developers              → admin only: create developer
+// GET    /access/developers/:id          → admin: any, developer: self
+// PATCH  /access/developers/:id/status   → admin only: activate/deactivate
+// DELETE /access/developers/:id          → admin only: delete developer
 
-// Admin-only: list users (filter by role)
-router.get(
-  "/users",
-  requireRole("admin"),
-  AccessController.listUsers
-);
+router.get(  "/developers",                   AccessController.listDevelopers);
+router.post( "/developers",     requireRole("admin"), AccessController.createDeveloper);
+router.get(  "/developers/:id",               AccessController.getDeveloper);
+router.patch("/developers/:id/status", requireRole("admin"), AccessController.toggleDeveloperStatus);
+router.delete("/developers/:id",       requireRole("admin"), AccessController.deleteDeveloper);
 
-// Admin-only: developer ↔ client mapping
-router.get(
-  "/assignments",
-  requireRole("admin"),
-  AccessController.listAssignments
-);
-router.post(
-  "/assignments",
-  requireRole("admin"),
-  AccessController.assign
-);
-router.delete(
-  "/assignments",
-  requireRole("admin"),
-  AccessController.revoke
-);
+// ── Admin Management ─────────────────────────────────────────────────────────
+// GET    /access/admins        → admin only: list all admin accounts
+// DELETE /access/admins/:id    → admin only: delete admin (guards: not self, not last)
 
-// Per-user/page permissions (users can read their own, admins can read any)
-router.get(
-  "/permissions/:user_id",
-  AccessController.listPermissions
-);
-router.post(
-  "/permissions",
-  requireRole("admin"),
-  AccessController.upsertPermission
-);
-router.delete(
-  "/permissions",
-  requireRole("admin"),
-  AccessController.deletePermission
-);
+router.get(   "/admins",         requireRole("admin"), AccessController.listAdmins);
+router.delete("/admins/:id",     requireRole("admin"), AccessController.deleteAdmin);
 
-// Developer-scoped permissions (developers can read their own, admins can read any)
-router.get(
-  "/developer-permissions/:developer_id/:client_user_id",
-  AccessController.listDeveloperPermissions
-);
-router.post(
-  "/developer-permissions",
-  requireRole("admin"),
-  AccessController.upsertDeveloperPermission
-);
-router.delete(
-  "/developer-permissions",
-  requireRole("admin"),
-  AccessController.deleteDeveloperPermission
-);
+// ── Page Permissions ─────────────────────────────────────────────────────────
+// GET    /access/developers/:id/permissions                → admin: any, developer: self
+// PUT    /access/developers/:id/permissions                → admin only: replace ALL permissions
+// PATCH  /access/developers/:id/permissions/:page_key     → admin only: upsert one permission
+// DELETE /access/developers/:id/permissions/:page_key     → admin only: remove one permission
+
+router.get(   "/developers/:id/permissions",                                    AccessController.getPermissions);
+router.put(   "/developers/:id/permissions",       requireRole("admin"),        AccessController.setPermissions);
+router.patch( "/developers/:id/permissions/:page_key", requireRole("admin"),   AccessController.upsertPermission);
+router.delete("/developers/:id/permissions/:page_key", requireRole("admin"),   AccessController.removePermission);
 
 export default router;

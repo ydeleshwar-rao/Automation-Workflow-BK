@@ -1,11 +1,15 @@
 import type { Request, Response, NextFunction } from "express";
-import { ApiError } from "../utils/ApiError.js";
-import { supabase } from "../config/db.config.js";
-import type { AppRole } from "../types/express.js";
+import { ApiError }          from "../utils/ApiError.js";
+import { verifyAccessToken } from "../modules/auth/jwt.js";
 
 /**
- * Verifies Supabase access JWT (Authorization: Bearer <access_token>).
- * Sets req.user.id, req.user.email, and req.user.role from the profiles table.
+ * Auth middleware — verifies our custom JWT.
+ *
+ * ✅ Pure local verification — NO Supabase API call needed
+ * ✅ Role + permissions extracted directly from JWT claims
+ * ✅ Fast: just a crypto verify, no network round-trip
+ *
+ * Sets req.user = { id, email, role, permissions }
  */
 export async function authMiddleware(
   req: Request,
@@ -15,10 +19,7 @@ export async function authMiddleware(
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader?.startsWith("Bearer ")) {
-      throw new ApiError(
-        401,
-        "Missing or invalid Authorization header. Send: Bearer <access_token>"
-      );
+      throw new ApiError(401, "Missing Authorization header. Expected: Bearer <token>");
     }
 
     const token = authHeader.replace(/^Bearer\s+/i, "").trim();
@@ -26,24 +27,14 @@ export async function authMiddleware(
       throw new ApiError(401, "Access token is required");
     }
 
-    const { data, error } = await supabase.auth.getUser(token);
-
-    if (error || !data.user) {
-      throw new ApiError(401, "Invalid or expired access token");
-    }
-
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("role")
-      .eq("id", data.user.id)
-      .single();
-
-    const role = (profile?.role as AppRole | undefined) ?? "user";
+    // Verify signature + expiry — throws ApiError if invalid
+    const payload = verifyAccessToken(token);
 
     req.user = {
-      id: data.user.id,
-      ...(data.user.email && { email: data.user.email }),
-      role,
+      id:          payload.sub,
+      email:       payload.email,
+      role:        payload.role,
+      permissions: payload.permissions,
     };
 
     next();

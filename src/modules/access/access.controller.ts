@@ -1,197 +1,201 @@
 import type { Request, Response } from "express";
-import { catchAsync } from "../../utils/catchAsync.js";
-import { ApiResponse } from "../../utils/ApiResponse.js";
-import { ApiError } from "../../utils/ApiError.js";
+import { catchAsync }    from "../../utils/catchAsync.js";
+import { ApiResponse }   from "../../utils/ApiResponse.js";
+import { ApiError }      from "../../utils/ApiError.js";
 import { AccessService } from "./access.service.js";
-import type { AppRole } from "../../types/express.js";
 
 export class AccessController {
-  /** GET /access/clients — list clients the logged-in user can access. */
-  static listClients = catchAsync(async (req: Request, res: Response) => {
-    const userId = req.user?.id;
-    const role = (req.user?.role ?? "user") as AppRole;
-    if (!userId) throw new ApiError(401, "Unauthorized");
 
-    const data = await AccessService.listAccessibleClients(userId, role);
-    return ApiResponse(res, 200, "Accessible clients", data);
-  });
+  // ── Session ────────────────────────────────────────────────────────────────
 
-  /** GET /access/me — current user + role + resolved targetUserId. */
+  /** GET /access/me — current logged-in user info from JWT. */
   static me = catchAsync(async (req: Request, res: Response) => {
     if (!req.user?.id) throw new ApiError(401, "Unauthorized");
     return ApiResponse(res, 200, "Current session", {
-      user_id: req.user.id,
-      email: req.user.email,
-      role: req.user.role,
-      target_user_id: req.targetUserId ?? req.user.id,
+      id:          req.user.id,
+      email:       req.user.email,
+      role:        req.user.role,
+      permissions: req.user.permissions,
     });
   });
 
-  /** GET /access/users?role=developer|user|admin  (admin) */
-  static listUsers = catchAsync(async (req: Request, res: Response) => {
-    const roleParam = req.query.role as string | undefined;
-    const allowed = ["admin", "developer", "user"] as const;
-    if (roleParam && !allowed.includes(roleParam as AppRole)) {
-      throw new ApiError(400, "role must be one of admin | developer | user");
-    }
-    const data = await AccessService.listUsersByRole(roleParam as AppRole | undefined);
-    return ApiResponse(res, 200, "Users", data);
-  });
+  // ── Developer Management (Admin only) ─────────────────────────────────────
 
-  /** POST /access/assignments  (admin)  body: { developer_id, client_ids: [] } */
-  static assign = catchAsync(async (req: Request, res: Response) => {
-    const { developer_id, client_ids } = req.body as {
-      developer_id?: string;
-      client_ids?: string[];
-    };
-    if (!developer_id || !Array.isArray(client_ids) || !client_ids.length) {
-      throw new ApiError(400, "developer_id and client_ids[] are required");
-    }
-    const data = await AccessService.assignClients(developer_id, client_ids);
-    return ApiResponse(res, 201, "Clients assigned", data);
+  /**
+   * GET /access/developers
+   * Admin: list all developers with their page permissions.
+   * Developer: returns self only.
+   */
+  static listDevelopers = catchAsync(async (req: Request, res: Response) => {
+    if (!req.user?.id) throw new ApiError(401, "Unauthorized");
+    const data = await AccessService.listDevelopers(req.user.role, req.user.id);
+    return ApiResponse(res, 200, "Developers", data);
   });
 
   /**
-   * DELETE /access/assignments  (admin)
-   * Accepts developer_id + client_id via body OR query string
-   * (some HTTP clients strip bodies from DELETE).
+   * GET /access/developers/:id
+   * Admin: get any developer. Developer: get self only.
    */
-  static revoke = catchAsync(async (req: Request, res: Response) => {
-    const developer_id =
-      (req.body?.developer_id as string | undefined) ??
-      (req.query.developer_id as string | undefined);
-    const client_id =
-      (req.body?.client_id as string | undefined) ??
-      (req.query.client_id as string | undefined);
-
-    if (!developer_id || !client_id) {
-      throw new ApiError(400, "developer_id and client_id are required");
+  static getDeveloper = catchAsync(async (req: Request, res: Response) => {
+    const devId = req.params.id;
+    if (!devId) throw new ApiError(400, "Developer ID is required");
+    if (req.user?.role !== "admin" && req.user?.id !== devId) {
+      throw new ApiError(403, "You can only view your own profile");
     }
-    const data = await AccessService.revokeClient(
-      developer_id.trim(),
-      client_id.trim()
-    );
-    return ApiResponse(res, 200, "Assignment revoked", data);
+    const data = await AccessService.getDeveloper(devId);
+    return ApiResponse(res, 200, "Developer", data);
   });
 
-  /** GET /access/assignments?developer_id=... (admin) */
-  static listAssignments = catchAsync(async (req: Request, res: Response) => {
-    const developerId = req.query.developer_id as string | undefined;
-    const data = await AccessService.listAssignments(developerId);
-    return ApiResponse(res, 200, "Assignments", data);
-  });
-
-  /** POST /access/permissions  (admin)  body: { user_id, page, can_read?, can_write? } */
-  static upsertPermission = catchAsync(async (req: Request, res: Response) => {
-    const { user_id, page, can_read, can_write } = req.body as {
-      user_id?: string;
-      page?: string;
-      can_read?: boolean;
-      can_write?: boolean;
+  /**
+   * POST /access/developers  (admin only)
+   * Body: { email, full_name, permissions: [{ page_key, can_view, can_edit?, can_delete? }] }
+   * Creates Supabase auth user + profile + page permissions.
+   * Returns profile + temp_password for initial login.
+   */
+  static createDeveloper = catchAsync(async (req: Request, res: Response) => {
+    const { email, full_name, permissions = [], password } = req.body as {
+      email?:       string;
+      full_name?:   string;
+      permissions?: Array<{ page_key: string; can_view: boolean; can_edit?: boolean; can_delete?: boolean }>;
+      password?:    string;
     };
-    if (!user_id || !page) {
-      throw new ApiError(400, "user_id and page are required");
-    }
-    const data = await AccessService.upsertPermission({
-      user_id,
-      page,
-      ...(typeof can_read === "boolean" ? { can_read } : {}),
-      ...(typeof can_write === "boolean" ? { can_write } : {}),
+
+    if (!email?.trim())     throw new ApiError(400, "email is required");
+    if (!full_name?.trim()) throw new ApiError(400, "full_name is required");
+    if (!req.user?.id)      throw new ApiError(401, "Unauthorized");
+
+    const data = await AccessService.createDeveloper({
+      email:       email.trim().toLowerCase(),
+      fullName:    full_name.trim(),
+      createdById: req.user.id,
+      permissions,
+      password,
     });
-    return ApiResponse(res, 200, "Permission saved", data);
+
+    return ApiResponse(res, 201, "Developer created", data);
   });
 
-  /** GET /access/permissions/:user_id (own permissions or admin) */
-  static listPermissions = catchAsync(async (req: Request, res: Response) => {
-    const userId = req.params.user_id;
-    if (typeof userId !== "string" || !userId) {
-      throw new ApiError(400, "user_id is required");
-    }
-    const callerId = req.user?.id;
-    const callerRole = req.user?.role;
-    if (callerRole !== "admin" && callerId !== userId) {
+  /**
+   * PATCH /access/developers/:id/status  (admin only)
+   * Body: { is_active: boolean }
+   */
+  static toggleDeveloperStatus = catchAsync(async (req: Request, res: Response) => {
+    const devId    = req.params.id;
+    const isActive = req.body?.is_active;
+
+    if (!devId)                    throw new ApiError(400, "Developer ID is required");
+    if (typeof isActive !== "boolean") throw new ApiError(400, "is_active (boolean) is required");
+
+    const data = await AccessService.toggleDeveloperStatus(devId, isActive);
+    return ApiResponse(res, 200, `Developer ${isActive ? "activated" : "deactivated"}`, data);
+  });
+
+  /**
+   * DELETE /access/developers/:id  (admin only)
+   * Permanently deletes Supabase auth user + all data (cascades).
+   */
+  static deleteDeveloper = catchAsync(async (req: Request, res: Response) => {
+    const devId = req.params.id;
+    if (!devId) throw new ApiError(400, "Developer ID is required");
+
+    const data = await AccessService.deleteDeveloper(devId);
+    return ApiResponse(res, 200, "Developer deleted", data);
+  });
+
+  // ── Admin Management (Admin only) ─────────────────────────────────────────
+
+  /**
+   * GET /access/admins  (admin only)
+   * Lists all admin accounts.
+   */
+  static listAdmins = catchAsync(async (req: Request, res: Response) => {
+    if (!req.user?.id) throw new ApiError(401, "Unauthorized");
+    const data = await AccessService.listAdmins();
+    return ApiResponse(res, 200, "Admins", data);
+  });
+
+  /**
+   * DELETE /access/admins/:id  (admin only)
+   * Permanently deletes an admin account.
+   * Cannot delete yourself or the last admin.
+   */
+  static deleteAdmin = catchAsync(async (req: Request, res: Response) => {
+    const adminId = req.params.id;
+    if (!adminId)      throw new ApiError(400, "Admin ID is required");
+    if (!req.user?.id) throw new ApiError(401, "Unauthorized");
+
+    const data = await AccessService.deleteAdmin(adminId, req.user.id);
+    return ApiResponse(res, 200, "Admin deleted", data);
+  });
+
+  // ── Page Permissions ───────────────────────────────────────────────────────
+
+  /**
+   * GET /access/developers/:id/permissions
+   * Admin: view any developer's permissions. Developer: view self only.
+   */
+  static getPermissions = catchAsync(async (req: Request, res: Response) => {
+    const userId = req.params.id;
+    if (!userId) throw new ApiError(400, "User ID is required");
+    if (req.user?.role !== "admin" && req.user?.id !== userId) {
       throw new ApiError(403, "You can only view your own permissions");
     }
-    const data = await AccessService.listPermissions(userId);
-    return ApiResponse(res, 200, "Permissions", data);
+    const data = await AccessService.getPagePermissions(userId);
+    return ApiResponse(res, 200, "Page permissions", data);
   });
 
-  /** DELETE /access/permissions  (admin)  body OR query: { user_id, page } */
-  static deletePermission = catchAsync(async (req: Request, res: Response) => {
-    const user_id =
-      (req.body?.user_id as string | undefined) ??
-      (req.query.user_id as string | undefined);
-    const page =
-      (req.body?.page as string | undefined) ??
-      (req.query.page as string | undefined);
-
-    if (!user_id || !page) {
-      throw new ApiError(400, "user_id and page are required");
-    }
-    const data = await AccessService.deletePermission(user_id.trim(), page.trim());
-    return ApiResponse(res, 200, "Permission removed", data);
-  });
-
-  // ── Developer-scoped permissions ──────────────────────────────────────────
-
-  /** GET /access/developer-permissions/:developer_id/:client_user_id */
-  static listDeveloperPermissions = catchAsync(async (req: Request, res: Response) => {
-    const developer_id = req.params.developer_id as string;
-    const client_user_id = req.params.client_user_id as string;
-    if (!developer_id || !client_user_id) {
-      throw new ApiError(400, "developer_id and client_user_id are required");
-    }
-    const callerId = req.user?.id;
-    const callerRole = req.user?.role;
-    if (callerRole !== "admin" && callerId !== developer_id) {
-      throw new ApiError(403, "You can only view your own developer permissions");
-    }
-    const data = await AccessService.listDeveloperPermissions(developer_id, client_user_id);
-    return ApiResponse(res, 200, "Developer permissions", data);
-  });
-
-  /** POST /access/developer-permissions  (admin) */
-  static upsertDeveloperPermission = catchAsync(async (req: Request, res: Response) => {
-    const { developer_id, client_user_id, page, can_read, can_write } = req.body as {
-      developer_id?: string;
-      client_user_id?: string;
-      page?: string;
-      can_read?: boolean;
-      can_write?: boolean;
+  /**
+   * PUT /access/developers/:id/permissions  (admin only)
+   * Body: { permissions: [{ page_key, can_view, can_edit?, can_delete? }] }
+   * Replaces ALL permissions for the developer.
+   */
+  static setPermissions = catchAsync(async (req: Request, res: Response) => {
+    const userId = req.params.id;
+    const { permissions } = req.body as {
+      permissions?: Array<{ page_key: string; can_view: boolean; can_edit?: boolean; can_delete?: boolean }>;
     };
-    if (!developer_id || !client_user_id || !page) {
-      throw new ApiError(400, "developer_id, client_user_id, and page are required");
-    }
-    const data = await AccessService.upsertDeveloperPermission({
-      developer_id,
-      client_user_id,
-      page,
-      ...(typeof can_read === "boolean" ? { can_read } : {}),
-      ...(typeof can_write === "boolean" ? { can_write } : {}),
-    });
-    return ApiResponse(res, 200, "Developer permission saved", data);
+
+    if (!userId)                     throw new ApiError(400, "User ID is required");
+    if (!Array.isArray(permissions)) throw new ApiError(400, "permissions[] is required");
+    if (!req.user?.id)               throw new ApiError(401, "Unauthorized");
+
+    const data = await AccessService.setPagePermissions(userId, permissions, req.user.id);
+    return ApiResponse(res, 200, "Permissions updated", data);
   });
 
-  /** DELETE /access/developer-permissions  (admin) */
-  static deleteDeveloperPermission = catchAsync(async (req: Request, res: Response) => {
-    const developer_id =
-      (req.body?.developer_id as string | undefined) ??
-      (req.query.developer_id as string | undefined);
-    const client_user_id =
-      (req.body?.client_user_id as string | undefined) ??
-      (req.query.client_user_id as string | undefined);
-    const page =
-      (req.body?.page as string | undefined) ??
-      (req.query.page as string | undefined);
+  /**
+   * PATCH /access/developers/:id/permissions/:page_key  (admin only)
+   * Body: { can_view?, can_edit?, can_delete? }
+   * Updates a single page permission.
+   */
+  static upsertPermission = catchAsync(async (req: Request, res: Response) => {
+    const { id: userId, page_key: pageKey } = req.params;
+    const { can_view, can_edit, can_delete } = req.body as {
+      can_view?:   boolean;
+      can_edit?:   boolean;
+      can_delete?: boolean;
+    };
 
-    if (!developer_id || !client_user_id || !page) {
-      throw new ApiError(400, "developer_id, client_user_id, and page are required");
-    }
-    const data = await AccessService.deleteDeveloperPermission(
-      developer_id.trim(),
-      client_user_id.trim(),
-      page.trim(),
+    if (!userId || !pageKey) throw new ApiError(400, "User ID and page_key are required");
+    if (!req.user?.id)       throw new ApiError(401, "Unauthorized");
+
+    const data = await AccessService.upsertPagePermission(
+      userId,
+      pageKey,
+      { canView: can_view, canEdit: can_edit, canDelete: can_delete },
+      req.user.id
     );
-    return ApiResponse(res, 200, "Developer permission removed", data);
+    return ApiResponse(res, 200, "Permission updated", data);
+  });
+
+  /**
+   * DELETE /access/developers/:id/permissions/:page_key  (admin only)
+   */
+  static removePermission = catchAsync(async (req: Request, res: Response) => {
+    const { id: userId, page_key: pageKey } = req.params;
+    if (!userId || !pageKey) throw new ApiError(400, "User ID and page_key are required");
+
+    const data = await AccessService.removePagePermission(userId, pageKey);
+    return ApiResponse(res, 200, "Permission removed", data);
   });
 }

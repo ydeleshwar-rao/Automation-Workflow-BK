@@ -82,11 +82,13 @@ export const globalRateLimiter = rateLimit({
 
 export const authRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: Number(process.env.RATE_LIMIT_AUTH ?? 10),
+  limit: Number(process.env.RATE_LIMIT_AUTH ?? 100),
   standardHeaders: "draft-8",
   legacyHeaders: false,
   keyGenerator: ipOnlyKey,
   handler: createHandler("auth"),
+  // Skip rate limiting entirely in development so testing isn't blocked
+  skip: () => process.env.NODE_ENV === "development",
 });
 
 export const mailSendRateLimiter = rateLimit({
