@@ -21,6 +21,7 @@ import razorpayRoutes from "./modules/initgrations/razorpay/route/razorpay.route
 import bigqueryRoutes from "./modules/bigquery/route/bigqueryClients.routes.js"
 import webhookEngineReceiverRoutes from "./modules/webhook-engine/webhook.routes.js"
 import pollingRouter from "./modules/polling-engine/polling.routes.js"
+import aiWorkflowRouter from "./modules/ai-workflow/ai-workflow.router.js"
 
 import {
   globalRateLimiter,
@@ -44,6 +45,7 @@ app.use("/leadshub", leadsHubRouter);
 app.use("/api", webhooksRoutes)
 app.use("/mail", emailRoutes)
 app.use("/automation", automationRoutes);
+app.use("/ai-workflow", authMiddleware, aiWorkflowRouter);
 
 // Third-party integration routes — additional per-user rate limiting
 app.use("/servicem8", integrationRateLimiter, servicem8Routes);
