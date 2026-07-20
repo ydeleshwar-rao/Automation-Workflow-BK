@@ -7,10 +7,12 @@ const router = Router();
 
 // Public routes (no auth required)
 router.post("/login",        authRateLimiter, AuthController.login);
+router.post("/google",       authRateLimiter, AuthController.google);
 router.post("/register",     authRateLimiter, AuthController.register);
 router.post("/refresh",      authRateLimiter, AuthController.refresh);
+router.post("/logout",       AuthController.logout);
 
-// First-time setup (blocked once an admin exists)
+// Admin signup/setup. setup/status only tells whether zero admins exist.
 router.get( "/setup/status", AuthController.setupStatus);
 router.post("/setup",        authRateLimiter, AuthController.setup);
 

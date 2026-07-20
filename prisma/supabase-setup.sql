@@ -365,16 +365,49 @@ END $$;
 -- ── Supabase trigger: auto-create profile on new auth user ─────
 CREATE OR REPLACE FUNCTION handle_new_user()
 RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  org_id uuid;
 BEGIN
-  INSERT INTO public.profiles (id, email, full_name, role, is_active)
-  VALUES (
-    NEW.id,
-    NEW.email,
-    COALESCE(NEW.raw_user_meta_data->>'full_name', ''),
-    COALESCE((NEW.raw_user_meta_data->>'role')::"Role", 'developer'),
-    true
-  )
-  ON CONFLICT (id) DO NOTHING;
+  org_id := nullif(NEW.raw_user_meta_data->>'organization_id', '')::uuid;
+
+  IF org_id IS NULL AND EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'profiles'
+      AND column_name = 'organization_id'
+  ) THEN
+    INSERT INTO public.organizations (name, owner_id)
+    VALUES (
+      COALESCE(NEW.raw_user_meta_data->>'organization_name', split_part(NEW.email, '@', 1) || '''s Organization'),
+      NEW.id
+    )
+    RETURNING id INTO org_id;
+  END IF;
+
+  IF org_id IS NULL THEN
+    INSERT INTO public.profiles (id, email, full_name, role, is_active)
+    VALUES (
+      NEW.id,
+      NEW.email,
+      COALESCE(NEW.raw_user_meta_data->>'full_name', ''),
+      COALESCE((NEW.raw_user_meta_data->>'role')::"Role", 'developer'),
+      true
+    )
+    ON CONFLICT (id) DO NOTHING;
+  ELSE
+    INSERT INTO public.profiles (id, email, full_name, role, organization_id, is_active)
+    VALUES (
+      NEW.id,
+      NEW.email,
+      COALESCE(NEW.raw_user_meta_data->>'full_name', ''),
+      COALESCE((NEW.raw_user_meta_data->>'role')::"Role", 'developer'),
+      org_id,
+      true
+    )
+    ON CONFLICT (id) DO NOTHING;
+  END IF;
+
   RETURN NEW;
 END;
 $$;

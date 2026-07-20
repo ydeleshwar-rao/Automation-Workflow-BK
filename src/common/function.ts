@@ -2,6 +2,14 @@ import { Request } from "express";
 import axios from "axios";
 import { ApiError } from "../utils/ApiError.js";
 import { supabase } from "../config/db.config.js";
+import { verifyAccessToken } from "../modules/auth/jwt.js";
+
+function readCookie(cookieHeader: string | undefined, name: string): string | null {
+  if (!cookieHeader) return null;
+  const cookies = cookieHeader.split(";").map((cookie) => cookie.trim());
+  const found = cookies.find((cookie) => cookie.startsWith(`${name}=`));
+  return found ? decodeURIComponent(found.slice(name.length + 1)) : null;
+}
 
 function redactIntegration(row: any) {
   if (!row || typeof row !== "object") return row;
@@ -13,10 +21,22 @@ function redactIntegration(row: any) {
 }
 
 export const getUserId = async (req: Request): Promise<string> => {
-  const clientkey =
-    (req as any).user?.id ||
-    req.headers["clientkey"] ||
-    req.query.clientkey;
+  const jwtUserId = (req as any).user?.id;
+  if (jwtUserId && typeof jwtUserId === "string") {
+    return jwtUserId;
+  }
+
+  const authHeader = req.headers.authorization;
+  const headerToken = authHeader?.startsWith("Bearer ")
+    ? authHeader.replace(/^Bearer\s+/i, "").trim()
+    : null;
+  const cookieToken = readCookie(req.headers.cookie, "jm_access_token");
+  const token = cookieToken || headerToken;
+  if (token) {
+    return verifyAccessToken(token).sub;
+  }
+
+  const clientkey = req.headers["clientkey"] || req.query.clientkey;
   if (!clientkey) throw new ApiError(401, "Unauthorized: User ID not found");
 
   const { data, error } = await supabase.from("profiles")

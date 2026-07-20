@@ -14,10 +14,13 @@ export async function useSupabaseAuthState(userId: string): Promise<{
   state: AuthenticationState;
   saveCreds: () => Promise<void>;
 }> {
-  const { data: rows } = await supabase
+  const { data: rows, error: loadError } = await supabase
     .from("whatsapp_auth_keys")
     .select("key_id, key_data")
     .eq("user_id", userId);
+  if (loadError) {
+    throw new Error(`Failed to load WhatsApp auth keys: ${loadError.message}`);
+  }
 
   const keyMap: Record<string, any> = {};
   for (const row of rows ?? []) {
@@ -66,17 +69,23 @@ export async function useSupabaseAuthState(userId: string): Promise<{
         }
 
         if (upsertRows.length > 0) {
-          await supabase
+          const { error } = await supabase
             .from("whatsapp_auth_keys")
             .upsert(upsertRows, { onConflict: "user_id,key_id" });
+          if (error) {
+            throw new Error(`Failed to save WhatsApp auth keys: ${error.message}`);
+          }
         }
 
         for (const keyId of deleteKeys) {
-          await supabase
+          const { error } = await supabase
             .from("whatsapp_auth_keys")
             .delete()
             .eq("user_id", userId)
             .eq("key_id", keyId);
+          if (error) {
+            throw new Error(`Failed to delete WhatsApp auth key ${keyId}: ${error.message}`);
+          }
         }
       },
     },
@@ -84,10 +93,13 @@ export async function useSupabaseAuthState(userId: string): Promise<{
 
   const saveCreds = async () => {
     const credsData = JSON.parse(JSON.stringify(creds, BufferJSON.replacer));
-    await supabase.from("whatsapp_auth_keys").upsert(
+    const { error } = await supabase.from("whatsapp_auth_keys").upsert(
       { user_id: userId, key_id: "creds", key_data: credsData },
       { onConflict: "user_id,key_id" }
     );
+    if (error) {
+      throw new Error(`Failed to save WhatsApp creds: ${error.message}`);
+    }
     keyMap["creds"] = credsData;
   };
 

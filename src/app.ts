@@ -52,7 +52,7 @@ app.use("/servicem8", integrationRateLimiter, servicem8Routes);
 app.use("/commusoft", integrationRateLimiter, commusoftRoutes);
 app.use("/simpro", integrationRateLimiter, simproRoutes);
 app.use("/zoho", integrationRateLimiter, zohoRoutes);
-app.use("/whatsapp", integrationRateLimiter, whatsappRoutes);
+app.use("/whatsapp", authMiddleware, integrationRateLimiter, whatsappRoutes);
 app.use("/zoho-forms", integrationRateLimiter, zohoFormsRoutes);
 app.use("/google-forms", integrationRateLimiter, googleFormsRoutes);
 app.use("/google-sheets", integrationRateLimiter, googleSheetsRoutes);

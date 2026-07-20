@@ -15,6 +15,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 // ─── Note on enums ───────────────────────────────────────────────────────────
@@ -33,6 +34,7 @@ model Profile {
   fullName   String   @default("") @map("full_name")
   avatarUrl  String?  @map("avatar_url")
   role       String   @default("developer")     // 'admin' | 'developer'  (enforced by DB CHECK)
+  organizationId String @map("organization_id") @db.Uuid
   isActive   Boolean  @default(true) @map("is_active")
   createdBy  String?  @map("created_by") @db.Uuid
   createdAt  DateTime @default(now()) @map("created_at")
@@ -41,6 +43,7 @@ model Profile {
   // Self-referential: which admin created this developer
   creator    Profile?  @relation("ProfileCreatedBy", fields: [createdBy], references: [id])
   created    Profile[] @relation("ProfileCreatedBy")
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   // Permissions
   pagePermissions PagePermission[] @relation("UserPermissions")
@@ -72,6 +75,18 @@ model Profile {
   integrationWebhookSubs IntegrationWebhookSubscription[]
 
   @@map("profiles")
+}
+
+model Organization {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  ownerId   String?  @map("owner_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  profiles Profile[]
+
+  @@map("organizations")
 }
 
 // ─── Page Permissions ─────────────────────────────────────────────────────────

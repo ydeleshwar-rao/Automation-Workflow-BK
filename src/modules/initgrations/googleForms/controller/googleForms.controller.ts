@@ -4,6 +4,11 @@ import { ApiResponse } from "../../../../utils/ApiResponse.js";
 import { ApiError } from "../../../../utils/ApiError.js";
 import { getUserId } from "../../../../common/function.js";
 
+const getParam = (value: string | string[] | undefined, name: string): string => {
+  if (!value || Array.isArray(value)) throw new ApiError(400, `${name} param is required`);
+  return value;
+};
+
 export class GoogleFormsController {
   // ─── OAuth ────────────────────────────────────────────────────────────
 
@@ -69,8 +74,7 @@ export class GoogleFormsController {
 
   static getFormDetails = async (req: Request, res: Response) => {
     const userId = await getUserId(req);
-    const { formId } = req.params;
-    if (!formId) throw new ApiError(400, "formId param is required");
+    const formId = getParam(req.params.formId, "formId");
     const data = await GoogleFormsService.getFormDetails(userId, formId);
     return ApiResponse(res, 200, "Form details fetched", data);
   };
@@ -79,8 +83,7 @@ export class GoogleFormsController {
 
   static getResponses = async (req: Request, res: Response) => {
     const userId = await getUserId(req);
-    const { formId } = req.params;
-    if (!formId) throw new ApiError(400, "formId param is required");
+    const formId = getParam(req.params.formId, "formId");
     const since = req.query.since as string | undefined;
     const data = await GoogleFormsService.getResponses(userId, formId, since);
     return ApiResponse(res, 200, "Responses fetched from Google", data);
@@ -105,16 +108,14 @@ export class GoogleFormsController {
 
   static watchForm = async (req: Request, res: Response) => {
     const userId = await getUserId(req);
-    const { formId } = req.params;
-    if (!formId) throw new ApiError(400, "formId param is required");
+    const formId = getParam(req.params.formId, "formId");
     const data = await GoogleFormsService.watchForm(userId, formId);
     return ApiResponse(res, 201, "Form watch registered", data);
   };
 
   static unwatchForm = async (req: Request, res: Response) => {
     const userId = await getUserId(req);
-    const { formId } = req.params;
-    if (!formId) throw new ApiError(400, "formId param is required");
+    const formId = getParam(req.params.formId, "formId");
     const data = await GoogleFormsService.unwatchForm(userId, formId);
     return ApiResponse(res, 200, "Form watch removed", data);
   };

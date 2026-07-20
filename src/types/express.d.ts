@@ -13,6 +13,7 @@ declare global {
         id:          string;    // profiles.id (UUID)
         email:       string;
         role:        UserRole;
+        organizationId: string;
         permissions: string[];  // page keys or ['*'] for admin
       };
       /** Effective user ID the request operates on (set by resolveTargetUser middleware). */

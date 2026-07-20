@@ -1,4 +1,5 @@
 import makeWASocket, {
+  Browsers,
   DisconnectReason,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
@@ -15,6 +16,7 @@ import type { WAStatus } from "../types/whatsapp.types.js";
 // ─── Session registry (in-memory) ────────────────────────────────────────────
 
 export interface WASession {
+  id: string;
   socket: WASocket;
   status: WAStatus;
   qrCode: string | null;
@@ -22,6 +24,13 @@ export interface WASession {
 }
 
 const sessions = new Map<string, WASession>();
+const reconnectTimers = new Map<string, NodeJS.Timeout>();
+const sessionStarts = new Map<string, Promise<void>>();
+
+function disconnectReasonName(code: number | undefined): string {
+  const match = Object.entries(DisconnectReason).find(([, value]) => value === code);
+  return match?.[0] ?? "unknown";
+}
 
 // Silent logger — Baileys is very noisy by default
 const logger = pino({ level: "silent" });
@@ -56,6 +65,25 @@ async function upsertStatus(
 // ─── Session lifecycle ────────────────────────────────────────────────────────
 
 export async function createSession(userId: string): Promise<void> {
+  const existingStart = sessionStarts.get(userId);
+  if (existingStart) return existingStart;
+
+  const start = doCreateSession(userId).finally(() => {
+    if (sessionStarts.get(userId) === start) {
+      sessionStarts.delete(userId);
+    }
+  });
+  sessionStarts.set(userId, start);
+  return start;
+}
+
+async function doCreateSession(userId: string): Promise<void> {
+  const pendingReconnect = reconnectTimers.get(userId);
+  if (pendingReconnect) {
+    clearTimeout(pendingReconnect);
+    reconnectTimers.delete(userId);
+  }
+
   const existing = sessions.get(userId);
   if (existing?.status === "connected") return;
 
@@ -67,6 +95,9 @@ export async function createSession(userId: string): Promise<void> {
 
   const { state, saveCreds } = await useSupabaseAuthState(userId);
   const { version } = await fetchLatestBaileysVersion();
+  const sessionId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  let lastCredsSave: Promise<void> = Promise.resolve();
+  console.log(`[WA Engine] Starting session user=${userId} version=${version.join(".")} session=${sessionId}`);
 
   const socket = makeWASocket({
     version,
@@ -76,12 +107,15 @@ export async function createSession(userId: string): Promise<void> {
     },
     logger,
     printQRInTerminal: false,
-    browser: ["WhatsApp Engine", "Chrome", "1.0.0"],
+    browser: Browsers.ubuntu("Chrome"),
     connectTimeoutMs: 30_000,
     keepAliveIntervalMs: 15_000,
+    markOnlineOnConnect: false,
+    syncFullHistory: false,
   });
 
   sessions.set(userId, {
+    id: sessionId,
     socket,
     status: "connecting",
     qrCode: null,
@@ -91,13 +125,27 @@ export async function createSession(userId: string): Promise<void> {
   await upsertStatus(userId, "connecting");
 
   // ─── Persist credentials on every update ──────────────────────────────────
-  socket.ev.on("creds.update", saveCreds);
+  socket.ev.on("creds.update", () => {
+    lastCredsSave = saveCreds()
+      .then(() => {
+        console.log(`[WA Engine] Creds saved user=${userId} session=${sessionId}`);
+      })
+      .catch((err) => {
+        console.error(`[WA Engine] Failed to save creds user=${userId} session=${sessionId}:`, err?.message ?? err);
+      });
+  });
 
   // ─── Connection state machine ──────────────────────────────────────────────
   socket.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
     const sess = sessions.get(userId);
-    if (!sess) return;
+    if (!sess || sess.id !== sessionId) return;
+
+    if (connection || qr) {
+      console.log(
+        `[WA Engine] Update user=${userId} session=${sessionId} connection=${connection ?? "pending"} qr=${qr ? "yes" : "no"}`
+      );
+    }
 
     // QR generated — user must scan
     if (qr) {
@@ -121,6 +169,8 @@ export async function createSession(userId: string): Promise<void> {
     // Connected successfully
     if (connection === "open") {
       const phoneNumber = socket.user?.id?.split(":")[0] ?? null;
+      const current = sessions.get(userId);
+      if (!current || current.id !== sessionId) return;
       sess.status = "connected";
       sess.qrCode = null;
       sess.phoneNumber = phoneNumber;
@@ -141,12 +191,33 @@ export async function createSession(userId: string): Promise<void> {
 
     // Disconnected
     if (connection === "close") {
+      const current = sessions.get(userId);
+      if (!current || current.id !== sessionId) return;
       const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+      const isRestartRequired = statusCode === DisconnectReason.restartRequired;
 
-      sessions.delete(userId);
-      await upsertStatus(userId, "disconnected", null);
-      console.log(`[WA Engine] Disconnected user=${userId} code=${statusCode} reconnect=${shouldReconnect}`);
+      if (isRestartRequired) {
+        try {
+          await lastCredsSave;
+          await saveCreds();
+          console.log(`[WA Engine] Restart creds flushed user=${userId} session=${sessionId}`);
+        } catch (err: any) {
+          console.error(`[WA Engine] Restart creds flush failed user=${userId} session=${sessionId}:`, err?.message ?? err);
+        }
+      }
+
+      if (shouldReconnect) {
+        sess.status = "connecting";
+        sess.qrCode = null;
+        sessions.set(userId, sess);
+      } else {
+        sessions.delete(userId);
+      }
+      await upsertStatus(userId, shouldReconnect ? "connecting" : "disconnected", shouldReconnect ? undefined : null);
+      console.log(
+        `[WA Engine] Disconnected user=${userId} code=${statusCode} reason=${disconnectReasonName(statusCode)} reconnect=${shouldReconnect}`
+      );
 
       const wh = await getWebhookConfig(userId);
       if (wh?.webhook_url) {
@@ -160,11 +231,24 @@ export async function createSession(userId: string): Promise<void> {
 
       // Auto-reconnect unless explicitly logged out
       if (shouldReconnect) {
-        console.log(`[WA Engine] Reconnecting user=${userId} in 5s...`);
-        setTimeout(() => createSession(userId).catch(console.error), 5_000);
+        const delayMs = isRestartRequired ? 1_500 : 1_000;
+        console.log(`[WA Engine] Reconnecting user=${userId} in ${delayMs}ms...`);
+        const timer = setTimeout(() => {
+          reconnectTimers.delete(userId);
+          createSession(userId).catch(console.error);
+        }, delayMs);
+        reconnectTimers.set(userId, timer);
       }
     }
   });
+
+  setTimeout(() => {
+    const sess = sessions.get(userId);
+    if (!sess || sess.id !== sessionId || sess.status === "connected") return;
+    console.warn(
+      `[WA Engine] Session still not connected after 45s user=${userId} session=${sessionId} status=${sess.status}`
+    );
+  }, 45_000);
 
   // ─── Incoming messages → dispatch to user webhook ──────────────────────────
   socket.ev.on("messages.upsert", async ({ messages, type }) => {
@@ -245,20 +329,41 @@ export function getAllActiveSessions(): string[] {
 }
 
 export async function terminateSession(userId: string): Promise<void> {
+  await clearLocalSession(userId);
+
+  // Wipe stored credentials
+  await supabase.from("whatsapp_sessions").delete().eq("user_id", userId);
+  await supabase.from("whatsapp_auth_keys").delete().eq("user_id", userId);
+}
+
+export async function resetSessionForNewQr(userId: string): Promise<void> {
+  await clearLocalSession(userId, { logout: false });
+  await supabase.from("whatsapp_sessions").delete().eq("user_id", userId);
+  await supabase.from("whatsapp_auth_keys").delete().eq("user_id", userId);
+}
+
+async function clearLocalSession(
+  userId: string,
+  options: { logout?: boolean } = {}
+): Promise<void> {
   const sess = sessions.get(userId);
   if (sess) {
-    try {
-      await sess.socket.logout();
-    } catch {}
+    if (options.logout !== false) {
+      try {
+        await sess.socket.logout();
+      } catch {}
+    }
     try {
       sess.socket.end(undefined);
     } catch {}
     sessions.delete(userId);
   }
 
-  // Wipe stored credentials
-  await supabase.from("whatsapp_sessions").delete().eq("user_id", userId);
-  await supabase.from("whatsapp_auth_keys").delete().eq("user_id", userId);
+  const pendingReconnect = reconnectTimers.get(userId);
+  if (pendingReconnect) {
+    clearTimeout(pendingReconnect);
+    reconnectTimers.delete(userId);
+  }
 }
 
 // ─── Restore persisted sessions on server startup ─────────────────────────────

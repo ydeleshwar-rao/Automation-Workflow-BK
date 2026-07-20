@@ -42,6 +42,7 @@ export function requirePage(pageKey: string) {
         sub:         req.user.id,
         email:       req.user.email,
         role:        req.user.role,
+        organization_id: req.user.organizationId,
         permissions: req.user.permissions,
         typ:         "access",
       },

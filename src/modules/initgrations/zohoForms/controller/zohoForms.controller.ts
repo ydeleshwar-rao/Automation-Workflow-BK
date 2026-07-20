@@ -4,6 +4,11 @@ import { ApiResponse } from "../../../../utils/ApiResponse.js";
 import { ApiError } from "../../../../utils/ApiError.js";
 import { getUserId } from "../../../../common/function.js";
 
+const getParam = (value: string | string[] | undefined, name: string): string => {
+  if (!value || Array.isArray(value)) throw new ApiError(400, `${name} param is required`);
+  return value;
+};
+
 export class ZohoFormsController {
   // ─── OAuth ────────────────────────────────────────────────────────────
 
@@ -69,16 +74,14 @@ export class ZohoFormsController {
 
   static getFormDetails = async (req: Request, res: Response) => {
     const userId = await getUserId(req);
-    const { formId } = req.params;
-    if (!formId) throw new ApiError(400, "formId param is required");
+    const formId = getParam(req.params.formId, "formId");
     const data = await ZohoFormsService.getFormDetails(userId, formId);
     return ApiResponse(res, 200, "Form details fetched", data);
   };
 
   static getFormFields = async (req: Request, res: Response) => {
     const userId = await getUserId(req);
-    const { formId } = req.params;
-    if (!formId) throw new ApiError(400, "formId param is required");
+    const formId = getParam(req.params.formId, "formId");
     const data = await ZohoFormsService.getFormFields(userId, formId);
     return ApiResponse(res, 200, "Form fields fetched", data);
   };
@@ -87,8 +90,7 @@ export class ZohoFormsController {
 
   static getSubmissions = async (req: Request, res: Response) => {
     const userId = await getUserId(req);
-    const { formId } = req.params;
-    if (!formId) throw new ApiError(400, "formId param is required");
+    const formId = getParam(req.params.formId, "formId");
     const page = parseInt(String(req.query.page ?? "1"), 10);
     const perPage = Math.min(parseInt(String(req.query.per_page ?? "100"), 10), 200);
     const data = await ZohoFormsService.getSubmissions(userId, formId, page, perPage);
@@ -112,16 +114,14 @@ export class ZohoFormsController {
 
   static setupWebhook = async (req: Request, res: Response) => {
     const userId = await getUserId(req);
-    const { formId } = req.params;
-    if (!formId) throw new ApiError(400, "formId param is required");
+    const formId = getParam(req.params.formId, "formId");
     const data = await ZohoFormsService.setupWebhook(userId, formId);
     return ApiResponse(res, 201, "Webhook registered on Zoho Forms", data);
   };
 
   static removeWebhook = async (req: Request, res: Response) => {
     const userId = await getUserId(req);
-    const { formId } = req.params;
-    if (!formId) throw new ApiError(400, "formId param is required");
+    const formId = getParam(req.params.formId, "formId");
     const data = await ZohoFormsService.removeWebhook(userId, formId);
     return ApiResponse(res, 200, "Webhook removed", data);
   };
@@ -138,7 +138,7 @@ export class ZohoFormsController {
   static incomingWebhook = async (req: Request, res: Response) => {
     const { userId, formId } = req.params;
 
-    if (!userId || !formId) {
+    if (!userId || !formId || Array.isArray(userId) || Array.isArray(formId)) {
       return res.status(400).json({ success: false, message: "userId and formId required" });
     }
 

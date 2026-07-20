@@ -10,7 +10,7 @@ export class WhatsAppController {
 
   static connect = async (req: Request, res: Response) => {
     const userId = await getUserId(req);
-    const data = await WhatsAppService.connect(userId);
+    const data = await WhatsAppService.connect(userId, { reset: req.body?.reset === true });
     return ApiResponse(res, 200, "WhatsApp connection initiated", data);
   };
 

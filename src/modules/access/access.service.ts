@@ -1,9 +1,6 @@
 import { supabase } from "../../config/db.config.js";
 import { ApiError }  from "../../utils/ApiError.js";
-import prisma        from "../../lib/prisma.js";
 import crypto        from "crypto";
-
-// ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface PagePermissionInput {
   page_key:   string;
@@ -12,284 +9,328 @@ export interface PagePermissionInput {
   can_delete?: boolean;
 }
 
-// ─── Access Service ───────────────────────────────────────────────────────────
+type ProfileRow = {
+  id: string;
+  email: string;
+  full_name: string | null;
+  avatar_url: string | null;
+  role: string;
+  organization_id: string;
+  is_active: boolean | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
+type PermissionRow = {
+  id?: string;
+  page_key: string;
+  can_view: boolean | null;
+  can_edit: boolean | null;
+  can_delete: boolean | null;
+  updated_at?: string;
+};
+
+function mapProfile(row: ProfileRow, pagePermissions: PermissionRow[] = []) {
+  return {
+    id: row.id,
+    email: row.email,
+    fullName: row.full_name ?? "",
+    avatarUrl: row.avatar_url,
+    role: row.role,
+    organizationId: row.organization_id,
+    isActive: row.is_active !== false,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    pagePermissions: pagePermissions.map(mapPermission),
+  };
+}
+
+function mapPermission(row: PermissionRow) {
+  return {
+    id: row.id,
+    pageKey: row.page_key,
+    canView: row.can_view ?? false,
+    canEdit: row.can_edit ?? false,
+    canDelete: row.can_delete ?? false,
+    updatedAt: row.updated_at,
+  };
+}
 
 export class AccessService {
+  private static async assertUserInOrganization(userId: string, organizationId: string) {
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id,organization_id")
+      .eq("id", userId)
+      .maybeSingle();
 
-  // ── Developer Management (Admin only) ─────────────────────────────────────
+    if (error) throw new ApiError(500, error.message);
+    if (!data || data.organization_id !== organizationId) {
+      throw new ApiError(404, "User not found");
+    }
+  }
 
-  /**
-   * Create a new developer account.
-   *  1. Create Supabase auth user
-   *  2. Profile is auto-created by the DB trigger
-   *  3. Set initial page permissions
-   *
-   * Returns the new user's profile + temp password (for initial login).
-   */
+  private static async getProfileWithPermissions(userId: string) {
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("id,email,full_name,avatar_url,role,organization_id,is_active,created_at,updated_at")
+      .eq("id", userId)
+      .maybeSingle();
+
+    if (profileError) throw new ApiError(500, profileError.message);
+    if (!profile) return null;
+
+    const { data: permissions, error: permissionsError } = await supabase
+      .from("page_permissions")
+      .select("id,page_key,can_view,can_edit,can_delete,updated_at")
+      .eq("user_id", userId)
+      .order("page_key", { ascending: true });
+
+    if (permissionsError) throw new ApiError(500, permissionsError.message);
+    return mapProfile(profile as ProfileRow, (permissions ?? []) as PermissionRow[]);
+  }
+
   static async createDeveloper(payload: {
     email:       string;
     fullName:    string;
     createdById: string;
+    organizationId: string;
     permissions: PagePermissionInput[];
-    password?:   string;        // if not provided, a secure random password is generated
+    password?:   string;
   }) {
     const password = payload.password ?? crypto.randomBytes(12).toString("base64url");
 
-    // Create Supabase auth user
     const { data: authData, error: authError } = await supabase.auth.admin.createUser({
-      email:          payload.email,
+      email: payload.email,
       password,
-      email_confirm:  true,
-      user_metadata:  { full_name: payload.fullName, role: "developer" },
+      email_confirm: true,
+      user_metadata: {
+        full_name: payload.fullName,
+        role: "developer",
+        organization_id: payload.organizationId,
+      },
     });
 
     if (authError) {
-      if (authError.message.includes("already registered")) {
+      if (authError.message.toLowerCase().includes("already registered")) {
         throw new ApiError(409, "A user with this email already exists");
       }
       throw new ApiError(400, authError.message);
     }
 
-    if (!authData.user?.id) {
-      throw new ApiError(500, "Failed to create auth user");
-    }
+    if (!authData.user?.id) throw new ApiError(500, "Failed to create auth user");
 
     const userId = authData.user.id;
+    const { error: profileError } = await supabase
+      .from("profiles")
+      .upsert({
+        id: userId,
+        email: payload.email,
+        full_name: payload.fullName,
+        role: "developer",
+        organization_id: payload.organizationId,
+        created_by: payload.createdById,
+        is_active: true,
+      }, { onConflict: "id" });
 
-    // Update profile (trigger creates it, we update name + created_by)
-    await prisma.profile.update({
-      where: { id: userId },
-      data:  { fullName: payload.fullName, createdBy: payload.createdById },
-    });
+    if (profileError) throw new ApiError(500, profileError.message);
 
-    // Set initial page permissions
     if (payload.permissions.length > 0) {
-      await AccessService.setPagePermissions(userId, payload.permissions, payload.createdById);
+      await AccessService.setPagePermissions(userId, payload.permissions, payload.createdById, payload.organizationId);
     }
 
-    const profile = await prisma.profile.findUnique({
-      where:  { id: userId },
-      select: {
-        id:              true,
-        email:           true,
-        fullName:        true,
-        role:            true,
-        isActive:        true,
-        createdAt:       true,
-        pagePermissions: { select: { pageKey: true, canView: true, canEdit: true, canDelete: true } },
-      },
-    });
-
+    const profile = await AccessService.getProfileWithPermissions(userId);
     return { profile, temp_password: password };
   }
 
-  /**
-   * List all developers (admin sees all, developer sees self only).
-   */
-  static async listDevelopers(callerRole: string, callerId: string) {
-    if (callerRole === "admin") {
-      return prisma.profile.findMany({
-        where:   { role: "developer" },
-        orderBy: { createdAt: "desc" },
-        select: {
-          id:              true,
-          email:           true,
-          fullName:        true,
-          avatarUrl:       true,
-          role:            true,
-          isActive:        true,
-          createdAt:       true,
-          pagePermissions: { select: { pageKey: true, canView: true, canEdit: true, canDelete: true } },
-        },
-      });
+  static async listDevelopers(callerRole: string, callerId: string, organizationId: string) {
+    if (callerRole !== "admin") {
+      const self = await AccessService.getProfileWithPermissions(callerId);
+      return self ? [self] : [];
     }
 
-    // Developer can only see self
-    const self = await prisma.profile.findUnique({
-      where:  { id: callerId },
-      select: {
-        id: true, email: true, fullName: true, role: true,
-        isActive: true, createdAt: true,
-        pagePermissions: { select: { pageKey: true, canView: true, canEdit: true, canDelete: true } },
-      },
-    });
-    return self ? [self] : [];
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id")
+      .eq("role", "developer")
+      .eq("organization_id", organizationId)
+      .order("created_at", { ascending: false });
+
+    if (error) throw new ApiError(500, error.message);
+    return Promise.all((data ?? []).map((row: { id: string }) => AccessService.getProfileWithPermissions(row.id)));
   }
 
-  /**
-   * Get a single developer's profile (admin only, or self).
-   */
-  static async getDeveloper(developerId: string) {
-    const profile = await prisma.profile.findUnique({
-      where:  { id: developerId },
-      select: {
-        id:              true,
-        email:           true,
-        fullName:        true,
-        avatarUrl:       true,
-        role:            true,
-        isActive:        true,
-        createdAt:       true,
-        updatedAt:       true,
-        pagePermissions: { select: { id: true, pageKey: true, canView: true, canEdit: true, canDelete: true } },
-      },
-    });
-    if (!profile) throw new ApiError(404, "Developer not found");
+  static async getDeveloper(developerId: string, organizationId?: string) {
+    const profile = await AccessService.getProfileWithPermissions(developerId);
+    if (!profile || profile.role !== "developer") throw new ApiError(404, "Developer not found");
+    if (organizationId && profile.organizationId !== organizationId) throw new ApiError(404, "Developer not found");
     return profile;
   }
 
-  /**
-   * Toggle developer active/inactive (admin only).
-   */
-  static async toggleDeveloperStatus(developerId: string, isActive: boolean) {
-    const profile = await prisma.profile.findUnique({ where: { id: developerId } });
+  static async toggleDeveloperStatus(developerId: string, isActive: boolean, organizationId?: string) {
+    if (organizationId) await AccessService.assertUserInOrganization(developerId, organizationId);
+
+    const { data: profile, error: fetchError } = await supabase
+      .from("profiles")
+      .select("role")
+      .eq("id", developerId)
+      .maybeSingle();
+
+    if (fetchError) throw new ApiError(500, fetchError.message);
     if (!profile) throw new ApiError(404, "Developer not found");
     if (profile.role !== "developer") throw new ApiError(400, "Target user is not a developer");
 
-    return prisma.profile.update({
-      where:  { id: developerId },
-      data:   { isActive },
-      select: { id: true, email: true, fullName: true, isActive: true, role: true },
-    });
+    const { data, error } = await supabase
+      .from("profiles")
+      .update({ is_active: isActive })
+      .eq("id", developerId)
+      .select("id,email,full_name,is_active,role,organization_id")
+      .single();
+
+    if (error) throw new ApiError(500, error.message);
+    return mapProfile(data as ProfileRow);
   }
 
-  /**
-   * Delete a developer account (admin only).
-   * Removes Supabase auth user + all related data (cascades via DB).
-   */
-  static async deleteDeveloper(developerId: string) {
-    const profile = await prisma.profile.findUnique({ where: { id: developerId } });
-    if (!profile) throw new ApiError(404, "Developer not found");
+  static async deleteDeveloper(developerId: string, organizationId?: string) {
+    const profile = await AccessService.getDeveloper(developerId, organizationId);
     if (profile.role !== "developer") throw new ApiError(400, "Can only delete developer accounts");
 
-    // Delete from Supabase auth (profile cascades via FK)
     const { error } = await supabase.auth.admin.deleteUser(developerId);
     if (error) throw new ApiError(500, `Failed to delete auth user: ${error.message}`);
 
     return { message: "Developer deleted successfully" };
   }
 
-  // ── Admin Management ───────────────────────────────────────────────────────
+  static async listAdmins(organizationId: string) {
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id,email,full_name,avatar_url,role,organization_id,is_active,created_at,updated_at")
+      .eq("role", "admin")
+      .eq("organization_id", organizationId)
+      .order("created_at", { ascending: true });
 
-  /**
-   * List all admin accounts.
-   */
-  static async listAdmins() {
-    return prisma.profile.findMany({
-      where:   { role: "admin" },
-      orderBy: { createdAt: "asc" },
-      select: {
-        id:        true,
-        email:     true,
-        fullName:  true,
-        avatarUrl: true,
-        role:      true,
-        isActive:  true,
-        createdAt: true,
-      },
-    });
+    if (error) throw new ApiError(500, error.message);
+    return ((data ?? []) as ProfileRow[]).map((row) => mapProfile(row));
   }
 
-  /**
-   * Delete an admin account (admin only).
-   * Guards:
-   *  - Cannot delete yourself
-   *  - Cannot delete the last remaining admin (would lock everyone out)
-   */
-  static async deleteAdmin(adminId: string, callerId: string) {
-    if (adminId === callerId) {
-      throw new ApiError(400, "You cannot delete your own account while logged in");
-    }
+  static async deleteAdmin(adminId: string, callerId: string, organizationId: string) {
+    if (adminId === callerId) throw new ApiError(400, "You cannot delete your own account while logged in");
 
-    const profile = await prisma.profile.findUnique({ where: { id: adminId } });
-    if (!profile) throw new ApiError(404, "Admin account not found");
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("id,role,organization_id")
+      .eq("id", adminId)
+      .maybeSingle();
+
+    if (profileError) throw new ApiError(500, profileError.message);
+    if (!profile || profile.organization_id !== organizationId) throw new ApiError(404, "Admin account not found");
     if (profile.role !== "admin") throw new ApiError(400, "Target account is not an admin");
 
-    // Guard: must keep at least one admin
-    const adminCount = await prisma.profile.count({ where: { role: "admin" } });
-    if (adminCount <= 1) {
-      throw new ApiError(400, "Cannot delete the last admin account — add another admin first");
-    }
+    const { count, error: countError } = await supabase
+      .from("profiles")
+      .select("id", { count: "exact", head: true })
+      .eq("role", "admin")
+      .eq("organization_id", organizationId);
 
-    // Delete from Supabase auth (profile cascades via FK)
+    if (countError) throw new ApiError(500, countError.message);
+    if ((count ?? 0) <= 1) throw new ApiError(400, "Cannot delete the last admin account � add another admin first");
+
     const { error } = await supabase.auth.admin.deleteUser(adminId);
     if (error) throw new ApiError(500, `Failed to delete auth user: ${error.message}`);
 
     return { message: "Admin account deleted successfully" };
   }
 
-  // ── Page Permissions ───────────────────────────────────────────────────────
-
-  /**
-   * Replace all page permissions for a developer.
-   * Admin provides the full list — existing permissions are replaced.
-   */
   static async setPagePermissions(
-    userId:      string,
+    userId: string,
     permissions: PagePermissionInput[],
-    grantedBy:   string
+    grantedBy: string,
+    organizationId?: string
   ) {
-    // Delete existing permissions for this user
-    await prisma.pagePermission.deleteMany({ where: { userId } });
+    if (organizationId) await AccessService.assertUserInOrganization(userId, organizationId);
 
+    const { error: deleteError } = await supabase
+      .from("page_permissions")
+      .delete()
+      .eq("user_id", userId);
+
+    if (deleteError) throw new ApiError(500, deleteError.message);
     if (permissions.length === 0) return [];
 
-    // Insert new permissions
-    const rows = permissions.map((p) => ({
-      userId,
-      pageKey:   p.page_key,
-      canView:   p.can_view,
-      canEdit:   p.can_edit   ?? false,
-      canDelete: p.can_delete ?? false,
-      grantedBy,
+    const rows = permissions.map((permission) => ({
+      user_id: userId,
+      page_key: permission.page_key,
+      can_view: permission.can_view,
+      can_edit: permission.can_edit ?? false,
+      can_delete: permission.can_delete ?? false,
+      granted_by: grantedBy,
     }));
 
-    await prisma.pagePermission.createMany({ data: rows });
+    const { error: insertError } = await supabase.from("page_permissions").insert(rows);
+    if (insertError) throw new ApiError(500, insertError.message);
 
-    return prisma.pagePermission.findMany({
-      where:   { userId },
-      select:  { id: true, pageKey: true, canView: true, canEdit: true, canDelete: true },
-      orderBy: { pageKey: "asc" },
-    });
+    return AccessService.getPagePermissions(userId, organizationId);
   }
 
-  /**
-   * Upsert a single page permission for a developer.
-   */
   static async upsertPagePermission(
-    userId:    string,
-    pageKey:   string,
-    data:      { canView?: boolean; canEdit?: boolean; canDelete?: boolean },
-    grantedBy: string
+    userId: string,
+    pageKey: string,
+    data: { canView?: boolean; canEdit?: boolean; canDelete?: boolean },
+    grantedBy: string,
+    organizationId?: string
   ) {
-    return prisma.pagePermission.upsert({
-      where:  { userId_pageKey: { userId, pageKey } },
-      update: { ...data, grantedBy },
-      create: { userId, pageKey, canView: data.canView ?? false, canEdit: data.canEdit ?? false, canDelete: data.canDelete ?? false, grantedBy },
-    });
+    if (organizationId) await AccessService.assertUserInOrganization(userId, organizationId);
+
+    const { data: row, error } = await supabase
+      .from("page_permissions")
+      .upsert({
+        user_id: userId,
+        page_key: pageKey,
+        ...(data.canView !== undefined ? { can_view: data.canView } : {}),
+        ...(data.canEdit !== undefined ? { can_edit: data.canEdit } : {}),
+        ...(data.canDelete !== undefined ? { can_delete: data.canDelete } : {}),
+        granted_by: grantedBy,
+      }, { onConflict: "user_id,page_key" })
+      .select("id,page_key,can_view,can_edit,can_delete,updated_at")
+      .single();
+
+    if (error) throw new ApiError(500, error.message);
+    return mapPermission(row as PermissionRow);
   }
 
-  /**
-   * Get all page permissions for a user.
-   */
-  static async getPagePermissions(userId: string) {
-    return prisma.pagePermission.findMany({
-      where:   { userId },
-      select:  { id: true, pageKey: true, canView: true, canEdit: true, canDelete: true, updatedAt: true },
-      orderBy: { pageKey: "asc" },
-    });
+  static async getPagePermissions(userId: string, organizationId?: string) {
+    if (organizationId) await AccessService.assertUserInOrganization(userId, organizationId);
+
+    const { data, error } = await supabase
+      .from("page_permissions")
+      .select("id,page_key,can_view,can_edit,can_delete,updated_at")
+      .eq("user_id", userId)
+      .order("page_key", { ascending: true });
+
+    if (error) throw new ApiError(500, error.message);
+    return ((data ?? []) as PermissionRow[]).map(mapPermission);
   }
 
-  /**
-   * Remove a single page permission.
-   */
-  static async removePagePermission(userId: string, pageKey: string) {
-    const perm = await prisma.pagePermission.findUnique({
-      where: { userId_pageKey: { userId, pageKey } },
-    });
-    if (!perm) throw new ApiError(404, `Permission '${pageKey}' not found for this user`);
+  static async removePagePermission(userId: string, pageKey: string, organizationId?: string) {
+    if (organizationId) await AccessService.assertUserInOrganization(userId, organizationId);
 
-    await prisma.pagePermission.delete({ where: { userId_pageKey: { userId, pageKey } } });
+    const { data: existing, error: findError } = await supabase
+      .from("page_permissions")
+      .select("id")
+      .eq("user_id", userId)
+      .eq("page_key", pageKey)
+      .maybeSingle();
+
+    if (findError) throw new ApiError(500, findError.message);
+    if (!existing) throw new ApiError(404, `Permission '${pageKey}' not found for this user`);
+
+    const { error } = await supabase
+      .from("page_permissions")
+      .delete()
+      .eq("user_id", userId)
+      .eq("page_key", pageKey);
+
+    if (error) throw new ApiError(500, error.message);
     return { message: "Permission removed" };
   }
 }

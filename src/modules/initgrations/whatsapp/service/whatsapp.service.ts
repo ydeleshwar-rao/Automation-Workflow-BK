@@ -4,6 +4,7 @@ import {
   createSession,
   getSession,
   terminateSession,
+  resetSessionForNewQr,
   formatJid,
 } from "../session/session.manager.js";
 import type {
@@ -51,7 +52,33 @@ export class WhatsAppService {
 
   // ── Connection ──────────────────────────────────────────────────────────────
 
-  static async connect(userId: string) {
+  static async connect(userId: string, options: { reset?: boolean } = {}) {
+    const sess = getSession(userId);
+    if (sess?.status === "connected") {
+      return {
+        message: "WhatsApp is already connected.",
+        status: "connected",
+        phone_number: sess.phoneNumber,
+      };
+    }
+    if (options.reset) {
+      await resetSessionForNewQr(userId);
+      await createSession(userId);
+      return {
+        message: "Previous WhatsApp credentials cleared. Poll GET /whatsapp/qr for the new QR code.",
+        status: "connecting",
+      };
+    }
+    if (sess?.status === "connecting" || sess?.status === "qr_ready") {
+      return {
+        message: "WhatsApp session already started. Poll GET /whatsapp/qr for the QR code.",
+        status: sess.status,
+        qr: sess.qrCode,
+        phone_number: sess.phoneNumber,
+      };
+    }
+
+    await resetSessionForNewQr(userId);
     await createSession(userId);
     return {
       message: "WhatsApp session initiated. Poll GET /whatsapp/qr for the QR code.",
@@ -60,36 +87,45 @@ export class WhatsAppService {
 
   static async getQrCode(userId: string) {
     const sess = getSession(userId);
+    const row = await getSessionRow(userId);
 
     if (!sess) {
+      if (row?.status === "connected") {
+        return {
+          status: "connected",
+          qr: null,
+          phone_number: row.phone_number ?? null,
+          message: "Already connected",
+        };
+      }
+
       await createSession(userId);
-      return { status: "connecting", qr: null, message: "Session starting — retry in a few seconds." };
+      return { status: "connecting", qr: null, message: "Session starting - retry in a few seconds." };
     }
 
     return {
       status: sess.status,
-      qr: sess.qrCode ?? null,
-      phone_number: sess.phoneNumber ?? null,
-      message: sess.qrCode
-        ? "Scan this QR code in WhatsApp → Linked Devices"
-        : sess.status === "connected"
+      qr: sess.status === "connected" ? null : sess.qrCode ?? null,
+      phone_number: sess.phoneNumber ?? row?.phone_number ?? null,
+      message: sess.status === "connected"
         ? "Already connected"
-        : "QR not yet ready — retry in 2s",
+        : sess.qrCode
+        ? "Scan this QR code in WhatsApp -> Linked Devices"
+        : "QR not yet ready - retry in 2s",
     };
   }
-
   static async getConnectionStatus(userId: string) {
     const sess = getSession(userId);
     const row = await getSessionRow(userId);
+    const status = sess?.status ?? row?.status ?? "disconnected";
     return {
-      connected: sess?.status === "connected",
-      status: sess?.status ?? row?.status ?? "disconnected",
+      connected: status === "connected",
+      status,
       phone_number: sess?.phoneNumber ?? row?.phone_number ?? null,
       webhook_url: row?.webhook_url ?? null,
       has_webhook: Boolean(row?.webhook_url),
     };
   }
-
   static async disconnect(userId: string) {
     await terminateSession(userId);
     return { disconnected: true };

@@ -18,6 +18,7 @@ export interface AppJwtPayload {
   sub:         string;       // profiles.id (UUID)
   email:       string;
   role:        UserRole;
+  organization_id: string;
   permissions: string[];     // page keys or ["*"] for admin
   typ:         JwtTyp;
   iat?:        number;
@@ -80,6 +81,7 @@ export function issueTokenPair(payload: {
   userId:      string;
   email:       string;
   role:        UserRole;
+  organizationId: string;
   permissions: string[];
 }): TokenPair {
   const accessExpirySpec  = process.env.JWT_ACCESS_EXPIRES  ?? "15m";
@@ -89,6 +91,7 @@ export function issueTokenPair(payload: {
     sub:         payload.userId,
     email:       payload.email,
     role:        payload.role,
+    organization_id: payload.organizationId,
     permissions: payload.role === "admin" ? ["*"] : payload.permissions,
     typ:         "access",
   };

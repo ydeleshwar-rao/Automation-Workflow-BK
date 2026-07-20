@@ -2,23 +2,98 @@ import { supabase }                              from "../../../config/db.config
 import { issueTokenPair, verifyRefreshToken }   from "../jwt.js";
 import type { UserRole }                        from "../jwt.js";
 import { ApiError }                             from "../../../utils/ApiError.js";
-import prisma                                   from "../../../lib/prisma.js";
+
+type ProfileRow = {
+  id: string;
+  email: string;
+  full_name: string | null;
+  role: string;
+  organization_id: string;
+  is_active: boolean | null;
+  avatar_url: string | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
+type PagePermissionRow = {
+  page_key: string;
+  can_view?: boolean;
+  can_edit?: boolean;
+  can_delete?: boolean;
+};
 
 export class AuthService {
-  // ── Login ──────────────────────────────────────────────────────────────────
+  private static async createOrganization(name: string, ownerId?: string): Promise<string> {
+    const { data, error } = await supabase
+      .from("organizations")
+      .insert({ name, owner_id: ownerId ?? null })
+      .select("id")
+      .single();
 
-  /**
-   * Validate credentials via Supabase auth, then issue our own custom JWT
-   * with role + page permissions embedded in the token claims.
-   *
-   * Flow:
-   *  1. supabase.auth.signInWithPassword  ← validates email/password
-   *  2. fetch profile from DB             ← get role
-   *  3. fetch page_permissions from DB    ← get allowed pages
-   *  4. sign custom JWT pair              ← our tokens (not Supabase session)
-   */
+    if (error) throw new ApiError(500, error.message);
+    if (!data?.id) throw new ApiError(500, "Failed to create organization");
+    return data.id as string;
+  }
+
+  private static async getProfileRow(userId: string): Promise<ProfileRow> {
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id,email,full_name,role,organization_id,is_active,avatar_url")
+      .eq("id", userId)
+      .maybeSingle();
+
+    if (error) throw new ApiError(500, error.message);
+    if (!data) throw new ApiError(404, "Profile not found. Please contact an administrator.");
+    if (data.is_active === false) {
+      throw new ApiError(403, "Your account has been deactivated. Contact an administrator.");
+    }
+    if (!data.organization_id) {
+      throw new ApiError(403, "Your account is not assigned to an organization.");
+    }
+
+    return data as ProfileRow;
+  }
+
+  private static async getViewPermissions(userId: string): Promise<string[]> {
+    const { data, error } = await supabase
+      .from("page_permissions")
+      .select("page_key")
+      .eq("user_id", userId)
+      .eq("can_view", true);
+
+    if (error) throw new ApiError(500, error.message);
+    return ((data ?? []) as PagePermissionRow[]).map((permission) => permission.page_key);
+  }
+
+  private static async issueAppSession(userId: string) {
+    const profile = await this.getProfileRow(userId);
+    const permissions = profile.role === "developer"
+      ? await this.getViewPermissions(userId)
+      : [];
+
+    const tokens = issueTokenPair({
+      userId,
+      email: profile.email,
+      role: profile.role as UserRole,
+      organizationId: profile.organization_id,
+      permissions,
+    });
+
+    return {
+      ...tokens,
+      user: {
+        id:          profile.id,
+        email:       profile.email,
+        full_name:   profile.full_name ?? "",
+        role:        profile.role,
+        organization_id: profile.organization_id,
+        avatar_url:  profile.avatar_url,
+        permissions: profile.role === "admin" ? ["*"] : permissions,
+      },
+    };
+  }
+
   static async login(email: string, password: string) {
-    // Step 1 — validate credentials (service_role supports signInWithPassword)
     const { data: authData, error: authError } =
       await supabase.auth.signInWithPassword({ email, password });
 
@@ -26,87 +101,83 @@ export class AuthService {
       throw new ApiError(401, authError?.message ?? "Invalid email or password");
     }
 
-    const userId = authData.user.id;
-
-    // Step 2 — fetch profile
-    const profile = await prisma.profile.findUnique({
-      where: { id: userId },
-      select: { id: true, email: true, fullName: true, role: true, isActive: true, avatarUrl: true },
-    });
-
-    if (!profile) {
-      throw new ApiError(404, "Profile not found. Please contact an administrator.");
-    }
-    if (!profile.isActive) {
-      throw new ApiError(403, "Your account has been deactivated. Contact an administrator.");
-    }
-
-    // Step 3 — fetch page permissions (only needed for developers)
-    let permissions: string[] = [];
-    if (profile.role === "developer") {
-      const perms = await prisma.pagePermission.findMany({
-        where:  { userId, canView: true },
-        select: { pageKey: true },
-      });
-      permissions = perms.map((p) => p.pageKey);
-    }
-    // admin gets ["*"] automatically inside issueTokenPair
-
-    // Step 4 — sign custom JWT
-    const tokens = issueTokenPair({
-      userId:      userId,
-      email:       profile.email,
-      role:        profile.role as UserRole,
-      permissions,
-    });
-
-    return {
-      ...tokens,
-      user: {
-        id:          profile.id,
-        email:       profile.email,
-        full_name:   profile.fullName,
-        role:        profile.role,
-        avatar_url:  profile.avatarUrl,
-        permissions: profile.role === "admin" ? ["*"] : permissions,
-      },
-    };
+    return this.issueAppSession(authData.user.id);
   }
 
-  // ── First-time Setup ───────────────────────────────────────────────────────
+  static async googleLogin(supabaseAccessToken: string) {
+    const { data, error } = await supabase.auth.getUser(supabaseAccessToken);
 
-  /**
-   * Returns true when zero admin profiles exist in the DB.
-   * Used by the frontend to decide whether to show the setup banner.
-   */
+    if (error || !data.user) {
+      throw new ApiError(401, error?.message ?? "Invalid Google sign-in session");
+    }
+
+    const user = data.user;
+    const email = user.email?.trim().toLowerCase();
+    if (!email) throw new ApiError(400, "Google account did not return an email address");
+
+    const meta = user.user_metadata as Record<string, unknown>;
+    const fullName =
+      typeof meta.full_name === "string" && meta.full_name.trim()
+        ? meta.full_name.trim()
+        : typeof meta.name === "string" && meta.name.trim()
+          ? meta.name.trim()
+          : email.split("@")[0] ?? "";
+    const avatarUrl =
+      typeof meta.avatar_url === "string"
+        ? meta.avatar_url
+        : typeof meta.picture === "string"
+          ? meta.picture
+          : null;
+
+    const { data: existingProfile, error: existingError } = await supabase
+      .from("profiles")
+      .select("organization_id")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    if (existingError) throw new ApiError(500, existingError.message);
+
+    const organizationId =
+      existingProfile?.organization_id ??
+      await this.createOrganization(`${fullName || email}'s Workspace`, user.id);
+
+    const { error: upsertError } = await supabase
+      .from("profiles")
+      .upsert({
+        id: user.id,
+        email,
+        full_name: fullName,
+        avatar_url: avatarUrl,
+        role: existingProfile?.organization_id ? undefined : "admin",
+        organization_id: organizationId,
+        is_active: true,
+      }, { onConflict: "id" });
+
+    if (upsertError) throw new ApiError(500, upsertError.message);
+
+    return this.issueAppSession(user.id);
+  }
+
   static async isSetupRequired(): Promise<boolean> {
-    const count = await prisma.profile.count({ where: { role: "admin" } });
-    return count === 0;
+    const { count, error } = await supabase
+      .from("profiles")
+      .select("id", { count: "exact", head: true })
+      .eq("role", "admin");
+
+    if (error) throw new ApiError(500, error.message);
+    return (count ?? 0) === 0;
   }
 
-  /**
-   * Create the FIRST admin account.
-   * Throws 403 if any admin already exists (setup already done).
-   *
-   * Flow:
-   *  1. Guard: reject if admin already exists
-   *  2. supabase.auth.admin.createUser  ← creates auth user with email auto-confirmed
-   *  3. upsert profile with role="admin" ← safe whether the trigger fired or not
-   *  4. issue JWT pair so the admin is logged in immediately
-   */
-  static async setupAdmin(email: string, password: string, fullName: string) {
-    // 1. Guard — only allowed when no admin exists yet
-    const adminCount = await prisma.profile.count({ where: { role: "admin" } });
-    if (adminCount > 0) {
-      throw new ApiError(403, "Setup already completed. An admin account already exists.");
-    }
+  static async setupAdmin(email: string, password: string, fullName: string, organizationName?: string) {
+    const organizationId = await this.createOrganization(
+      organizationName?.trim() || `${fullName}'s Organization`,
+    );
 
-    // 2. Create Supabase auth user
     const { data: authData, error: authError } = await supabase.auth.admin.createUser({
       email,
       password,
       email_confirm: true,
-      user_metadata: { full_name: fullName, role: "admin" },
+      user_metadata: { full_name: fullName, role: "admin", organization_id: organizationId },
     });
 
     if (authError) {
@@ -116,22 +187,25 @@ export class AuthService {
       throw new ApiError(400, authError.message);
     }
 
-    if (!authData.user?.id) {
-      throw new ApiError(500, "Failed to create auth user");
-    }
+    if (!authData.user?.id) throw new ApiError(500, "Failed to create auth user");
 
     const userId = authData.user.id;
+    await supabase.from("organizations").update({ owner_id: userId }).eq("id", organizationId);
 
-    // 3. Upsert profile with role="admin" (safe if trigger hasn't fired yet)
-    await prisma.profile.upsert({
-      where:  { id: userId },
-      create: { id: userId, email, fullName, role: "admin", isActive: true },
-      update: { fullName, role: "admin", isActive: true },
-    });
+    const { error: upsertError } = await supabase
+      .from("profiles")
+      .upsert({
+        id: userId,
+        email,
+        full_name: fullName,
+        role: "admin",
+        organization_id: organizationId,
+        is_active: true,
+      }, { onConflict: "id" });
 
-    // 4. Issue JWT so the admin lands on the dashboard immediately
-    const tokens = issueTokenPair({ userId, email, role: "admin", permissions: [] });
+    if (upsertError) throw new ApiError(500, upsertError.message);
 
+    const tokens = issueTokenPair({ userId, email, role: "admin", organizationId, permissions: [] });
     return {
       ...tokens,
       user: {
@@ -139,29 +213,21 @@ export class AuthService {
         email,
         full_name:   fullName,
         role:        "admin",
+        organization_id: organizationId,
         avatar_url:  null,
         permissions: ["*"],
       },
     };
   }
 
-  // ── Register ───────────────────────────────────────────────────────────────
-
-  /**
-   * Self-registration — creates a new developer account.
-   *
-   * Flow:
-   *  1. supabase.auth.admin.createUser  ← creates auth user (email auto-confirmed)
-   *  2. DB trigger creates profile row  ← we then update fullName
-   *  3. Return basic profile info       ← user can log in immediately
-   */
   static async register(email: string, password: string, fullName: string) {
-    // Create Supabase auth user (admin API = email auto-confirmed, no email needed)
+    const organizationId = await this.createOrganization(`${fullName}'s Organization`);
+
     const { data: authData, error: authError } = await supabase.auth.admin.createUser({
       email,
       password,
       email_confirm: true,
-      user_metadata: { full_name: fullName, role: "developer" },
+      user_metadata: { full_name: fullName, role: "developer", organization_id: organizationId },
     });
 
     if (authError) {
@@ -171,101 +237,71 @@ export class AuthService {
       throw new ApiError(400, authError.message);
     }
 
-    if (!authData.user?.id) {
-      throw new ApiError(500, "Failed to create user account");
-    }
+    if (!authData.user?.id) throw new ApiError(500, "Failed to create user account");
 
     const userId = authData.user.id;
+    await supabase.from("organizations").update({ owner_id: userId }).eq("id", organizationId);
 
-    // The DB trigger creates the profile row on auth user creation.
-    // Update the full_name field since triggers often leave it blank.
-    try {
-      await prisma.profile.update({
-        where: { id: userId },
-        data:  { fullName },
-      });
-    } catch {
-      // Trigger may not have fired yet — profile may be created async.
-      // Not a hard failure; user can still log in.
-    }
+    const { error: upsertError } = await supabase
+      .from("profiles")
+      .upsert({
+        id: userId,
+        email,
+        full_name: fullName,
+        role: "developer",
+        organization_id: organizationId,
+        is_active: true,
+      }, { onConflict: "id" });
+
+    if (upsertError) throw new ApiError(500, upsertError.message);
 
     return {
       user_id:   userId,
       email,
       full_name: fullName,
+      organization_id: organizationId,
     };
   }
 
-  // ── Refresh ────────────────────────────────────────────────────────────────
-
-  /**
-   * Exchange a valid refresh token for a new token pair.
-   * Re-fetches permissions from DB so any permission changes take effect.
-   */
   static async refreshTokens(refreshToken: string) {
-    // Verify our own refresh token
     const { sub: userId } = verifyRefreshToken(refreshToken);
-
-    // Re-fetch profile + permissions
-    const profile = await prisma.profile.findUnique({
-      where:  { id: userId },
-      select: { id: true, email: true, fullName: true, role: true, isActive: true, avatarUrl: true },
-    });
-
-    if (!profile)      throw new ApiError(404, "User not found");
-    if (!profile.isActive) throw new ApiError(403, "Account deactivated");
-
-    let permissions: string[] = [];
-    if (profile.role === "developer") {
-      const perms = await prisma.pagePermission.findMany({
-        where:  { userId, canView: true },
-        select: { pageKey: true },
-      });
-      permissions = perms.map((p) => p.pageKey);
-    }
-
-    const tokens = issueTokenPair({
-      userId:      userId,
-      email:       profile.email,
-      role:        profile.role as UserRole,
-      permissions,
-    });
-
-    return {
-      ...tokens,
-      user: {
-        id:          profile.id,
-        email:       profile.email,
-        full_name:   profile.fullName,
-        role:        profile.role,
-        avatar_url:  profile.avatarUrl,
-        permissions: profile.role === "admin" ? ["*"] : permissions,
-      },
-    };
+    return this.issueAppSession(userId);
   }
 
-  // ── Profile ────────────────────────────────────────────────────────────────
-
-  /** Get full profile for the authenticated user. */
   static async getProfile(userId: string) {
-    const profile = await prisma.profile.findUnique({
-      where:  { id: userId },
-      select: {
-        id:         true,
-        email:      true,
-        fullName:   true,
-        avatarUrl:  true,
-        role:       true,
-        isActive:   true,
-        createdAt:  true,
-        updatedAt:  true,
-        pagePermissions: {
-          select: { pageKey: true, canView: true, canEdit: true, canDelete: true },
-        },
-      },
-    });
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("id,email,full_name,avatar_url,role,organization_id,is_active,created_at,updated_at")
+      .eq("id", userId)
+      .maybeSingle();
 
+    if (profileError) throw new ApiError(500, profileError.message);
     if (!profile) throw new ApiError(404, "Profile not found");
-    return profile;
+
+    const { data: permissions, error: permissionsError } = await supabase
+      .from("page_permissions")
+      .select("page_key,can_view,can_edit,can_delete")
+      .eq("user_id", userId);
+
+    if (permissionsError) throw new ApiError(500, permissionsError.message);
+
+    const row = profile as ProfileRow;
+    return {
+      id: row.id,
+      email: row.email,
+      fullName: row.full_name ?? "",
+      avatarUrl: row.avatar_url,
+      role: row.role,
+      organizationId: row.organization_id,
+      isActive: row.is_active !== false,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      pagePermissions: ((permissions ?? []) as PagePermissionRow[]).map((permission) => ({
+        pageKey: permission.page_key,
+        canView: permission.can_view ?? false,
+        canEdit: permission.can_edit ?? false,
+        canDelete: permission.can_delete ?? false,
+      })),
+    };
   }
 }

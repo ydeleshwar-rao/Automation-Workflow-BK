@@ -6,6 +6,7 @@ import { ServiceM8Service } from "../../initgrations/serviceM8/service/serviceM8
 import { buildDiaryEventPayload } from "../../initgrations/serviceM8/utils/serviceM8DiaryEvent.util.js";
 import { CommusoftService } from "../../initgrations/commusoft/service/commusoft.service.js";
 import { SimproService } from "../../initgrations/simpro/service/simpro.service.js";
+import { WhatsAppService } from "../../initgrations/whatsapp/service/whatsapp.service.js";
 import { workflowLogger as log } from "../../../utils/logger.js";
 
 
@@ -525,7 +526,122 @@ export async function executeAction(
     inputFields: Object.keys(input),
   });
 
-  // ── Email: send_email ────────────────────────────────────────────────────────
+  // WhatsApp: send_text_message
+  if (node.integration_key === "whatsapp" && node.action_key === "send_text_message") {
+    const to = String(input.to ?? "").trim();
+    const message = String(input.message ?? "").trim();
+
+    if (!node.user_id) {
+      throw new Error("[Action:whatsapp] user_id not found on workflow node.");
+    }
+    if (!to) {
+      throw new Error("[Action:whatsapp] 'to' field is empty - check the field mapping for destination_field='to'.");
+    }
+    if (!message) {
+      throw new Error("[Action:whatsapp] 'message' field is empty - check the field mapping for destination_field='message'.");
+    }
+
+    log.info("sending whatsapp text", {
+      nodeId: node.id,
+      userId: node.user_id,
+      to,
+    });
+
+    const result = await WhatsAppService.sendText(node.user_id, { to, message });
+
+    log.info("whatsapp text sent", {
+      nodeId: node.id,
+      to,
+      messageId: result?.message_id,
+    });
+
+    return {
+      status: "success",
+      to,
+      message_id: result?.message_id,
+    };
+  }
+
+  if (node.integration_key === "whatsapp" && node.action_key === "send_image") {
+    const to = String(input.to ?? "").trim();
+    const url = String(input.url ?? "").trim();
+    if (!node.user_id) throw new Error("[Action:whatsapp] user_id not found on workflow node.");
+    if (!to || !url) throw new Error("[Action:whatsapp] 'to' and 'url' fields are required for send_image.");
+
+    const payload: any = {
+      to,
+      type: "image",
+      url,
+    };
+    if (input.caption) payload.caption = String(input.caption);
+    if (input.mimetype) payload.mimetype = String(input.mimetype);
+
+    const result = await WhatsAppService.sendImage(node.user_id, payload);
+
+    return { status: "success", to, message_id: result?.message_id };
+  }
+
+  if (node.integration_key === "whatsapp" && node.action_key === "send_document") {
+    const to = String(input.to ?? "").trim();
+    const url = String(input.url ?? "").trim();
+    if (!node.user_id) throw new Error("[Action:whatsapp] user_id not found on workflow node.");
+    if (!to || !url) throw new Error("[Action:whatsapp] 'to' and 'url' fields are required for send_document.");
+
+    const payload: any = {
+      to,
+      type: "document",
+      url,
+    };
+    if (input.filename) payload.filename = String(input.filename);
+    if (input.caption) payload.caption = String(input.caption);
+    if (input.mimetype) payload.mimetype = String(input.mimetype);
+
+    const result = await WhatsAppService.sendDocument(node.user_id, payload);
+
+    return { status: "success", to, message_id: result?.message_id };
+  }
+
+  if (node.integration_key === "whatsapp" && node.action_key === "send_location") {
+    const to = String(input.to ?? "").trim();
+    const lat = Number(input.lat);
+    const lng = Number(input.lng);
+    if (!node.user_id) throw new Error("[Action:whatsapp] user_id not found on workflow node.");
+    if (!to || Number.isNaN(lat) || Number.isNaN(lng)) {
+      throw new Error("[Action:whatsapp] 'to', 'lat', and 'lng' fields are required for send_location.");
+    }
+
+    const payload: any = {
+      to,
+      lat,
+      lng,
+    };
+    if (input.name) payload.name = String(input.name);
+    if (input.address) payload.address = String(input.address);
+
+    const result = await WhatsAppService.sendLocation(node.user_id, payload);
+
+    return { status: "success", to, message_id: result?.message_id };
+  }
+
+  if (node.integration_key === "whatsapp" && node.action_key === "send_template_message") {
+    const to = String(input.to ?? "").trim();
+    const message = String(input.message ?? "").trim();
+    if (!node.user_id) throw new Error("[Action:whatsapp] user_id not found on workflow node.");
+    if (!to || !message) {
+      throw new Error("[Action:whatsapp] 'to' and 'message' fields are required for send_template_message.");
+    }
+
+    const result = await WhatsAppService.sendText(node.user_id, { to, message });
+    return {
+      status: "success",
+      to,
+      template_name: input.templateName ? String(input.templateName) : undefined,
+      language: input.language ? String(input.language) : undefined,
+      message_id: result?.message_id,
+    };
+  }
+
+  // Email: send_email
   if (node.integration_key === "email" && node.action_key === "send_email") {
     const smtpId = node.config?.smtp_id ?? node.config?.accountId;
     const locationId = await getLocationIdByUserId(node.user_id);

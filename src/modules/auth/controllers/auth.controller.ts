@@ -4,6 +4,43 @@ import { ApiResponse }   from "../../../utils/ApiResponse.js";
 import { ApiError }      from "../../../utils/ApiError.js";
 import { AuthService }   from "../service/auth.service.js";
 
+type AuthResult = {
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+  user: unknown;
+};
+
+const isProd = process.env.NODE_ENV === "production";
+const refreshMaxAgeSeconds = 7 * 24 * 60 * 60;
+
+function cookieOptions(maxAgeSeconds: number) {
+  return {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: "lax" as const,
+    path: "/",
+    maxAge: maxAgeSeconds * 1000,
+  };
+}
+
+function setAuthCookies(res: Response, result: AuthResult) {
+  res.cookie("jm_access_token", result.access_token, cookieOptions(result.expires_in));
+  res.cookie("jm_refresh_token", result.refresh_token, cookieOptions(refreshMaxAgeSeconds));
+}
+
+function clearAuthCookies(res: Response) {
+  res.clearCookie("jm_access_token", { path: "/" });
+  res.clearCookie("jm_refresh_token", { path: "/" });
+}
+
+function publicAuthPayload(result: AuthResult) {
+  return {
+    expires_in: result.expires_in,
+    user: result.user,
+  };
+}
+
 export class AuthController {
   /**
    * POST /auth/login
@@ -17,8 +54,21 @@ export class AuthController {
       throw new ApiError(400, "email and password are required");
     }
 
-    const result = await AuthService.login(email.trim().toLowerCase(), password);
-    return ApiResponse(res, 200, "Login successful", result);
+    const result = await AuthService.login(email.trim().toLowerCase(), password) as AuthResult;
+    setAuthCookies(res, result);
+    return ApiResponse(res, 200, "Login successful", publicAuthPayload(result));
+  });
+
+  static google = catchAsync(async (req: Request, res: Response) => {
+    const { access_token } = req.body as { access_token?: string };
+
+    if (!access_token?.trim()) {
+      throw new ApiError(400, "access_token is required");
+    }
+
+    const result = await AuthService.googleLogin(access_token.trim()) as AuthResult;
+    setAuthCookies(res, result);
+    return ApiResponse(res, 200, "Google sign-in successful", publicAuthPayload(result));
   });
 
   /**
@@ -38,10 +88,11 @@ export class AuthController {
    * logged in immediately. Returns 403 if an admin already exists.
    */
   static setup = catchAsync(async (req: Request, res: Response) => {
-    const { email, password, full_name } = req.body as {
+    const { email, password, full_name, organization_name } = req.body as {
       email?:     string;
       password?:  string;
       full_name?: string;
+      organization_name?: string;
     };
 
     if (!email?.trim())     throw new ApiError(400, "email is required");
@@ -54,9 +105,11 @@ export class AuthController {
       email.trim().toLowerCase(),
       password,
       full_name.trim(),
-    );
+      organization_name?.trim(),
+    ) as AuthResult;
 
-    return ApiResponse(res, 201, "Admin account created. Welcome!", result);
+    setAuthCookies(res, result);
+    return ApiResponse(res, 201, "Admin account created. Welcome!", publicAuthPayload(result));
   });
 
   /**
@@ -94,13 +147,25 @@ export class AuthController {
    */
   static refresh = catchAsync(async (req: Request, res: Response) => {
     const { refresh_token } = req.body as { refresh_token?: string };
+    const cookieRefreshToken = req.headers.cookie
+      ?.split(";")
+      .map((cookie) => cookie.trim())
+      .find((cookie) => cookie.startsWith("jm_refresh_token="))
+      ?.slice("jm_refresh_token=".length);
+    const refreshToken = refresh_token?.trim() || (cookieRefreshToken ? decodeURIComponent(cookieRefreshToken) : "");
 
-    if (!refresh_token?.trim()) {
+    if (!refreshToken) {
       throw new ApiError(400, "refresh_token is required");
     }
 
-    const result = await AuthService.refreshTokens(refresh_token.trim());
-    return ApiResponse(res, 200, "Token refreshed", result);
+    const result = await AuthService.refreshTokens(refreshToken) as AuthResult;
+    setAuthCookies(res, result);
+    return ApiResponse(res, 200, "Token refreshed", publicAuthPayload(result));
+  });
+
+  static logout = catchAsync(async (_req: Request, res: Response) => {
+    clearAuthCookies(res);
+    return ApiResponse(res, 200, "Logout successful", { loggedOut: true });
   });
 
   /**
